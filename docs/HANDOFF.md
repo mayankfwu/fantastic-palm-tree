@@ -1,19 +1,19 @@
 # Contributor handoff
 
-This hackathon project simulates satellite–debris encounters. Owner A's orbit and data backend is ready for integration. Collision risk, avoidance maneuvers, and the Streamlit app are the next pieces.
+This hackathon project simulates satellite–debris encounters. Owner A's backend and Owner C's single-satellite Streamlit demo are working. Collision risk and avoidance maneuvers are the next pieces.
 
 Read [AGENTS.md](../AGENTS.md) for folder ownership and the shared interfaces. The [orbit plan and validation notes](ORBITS_PLAN.md) explain the screening approach and the comparison against CelesTrak SOCRATES Plus.
 
 ## Run the offline demo
 
-From the repository root, use Python 3.12. For a fresh checkout, install the dependencies needed by the orbit backend and its tests.
+From the repository root, use Python 3.12. Set up the environment and start Streamlit.
 
 ```bash
 python3.12 -m venv venv
 source venv/bin/activate
-python -m pip install numpy requests scipy sgp4 pytest
+python -m pip install -r requirements.txt
 python -m pytest -q
-python -c 'from src.orbits.demo import replay_demo; print(*replay_demo(), sep="\n")'
+streamlit run app.py
 ```
 
 The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMOS 2251 debris records](../data/fixtures/demo_cosmos_2251.json). It replays a fixed 48-hour window beginning on 2026-11-21 at 19:00 UTC. Both the demo and the test suite run offline after dependency installation.
@@ -37,14 +37,23 @@ The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMO
 
 ## Owner C — Streamlit and visualization
 
-- Start the demo view with `replay_demo()` so it can show ranked encounters without a network connection. Use the frozen scenario start and label times UTC and propagated vectors TEME.
-- Connect the upload control to `import_user_omm(upload.getvalue(), kind)`. Show validation errors and confirm the imported NORAD IDs on success. Load imported satellites into the primary picker and imported debris into the screening catalog.
-- When combining live and imported debris, put the preferred elements first for any duplicate NORAD ID. Screening uses the first occurrence. Wire in Owner B's risk, burn, and fuel outputs when they are ready.
+- The Streamlit app shows the frozen SCD 2 scenario and a ranked encounter table. The selected encounter drives a slow-motion 3D animation in satellite-relative km, a zoomed-out orbit view with a solid Earth in TEME km, and a separation chart in seconds from closest approach.
+- The 3D orbit view opens first. Both objects move in both views. Both 3D views hide background axes and grids. The illustrative impact option shifts the debris path to meet the satellite at closest approach and stops playback there. The ranked table always shows the orbital predictions.
+- The close-up updates the object positions and the separation graph marker together while the camera remains interactive.
+- The full orbit uses the same drag and arrow-key controls during playback. Earth is shaded and hides objects on its far side.
+- The app keeps the propagated models and ranked results in Streamlit session state so selecting a different encounter avoids rerunning screening. `load_demo_scenario()` exposes the snapshot settings and models for reuse.
+- Multi-satellite selection and user-uploaded debris are deferred. For that future workflow, call `import_user_omm(upload.getvalue(), kind)`, surface validation errors, and place preferred elements first when a NORAD ID appears more than once.
+
+### Future continuous simulation
+
+- Advance a continuous simulation clock at real-time speed by default. Live views should follow that clock without requiring a time slider.
+- Screen a rolling window ahead of the clock. Recheck projected approaches after each avoidance maneuver using the updated satellite trajectory.
+- Use Owner B's risk and maneuver models to trigger and apply simulated avoidance burns. Display the predicted encounter, commanded burn, and updated miss distance. Keep this workflow in the simulator.
 
 ## Next three tasks
 
 1. Owner B implements risk and maneuver calculations against the fake fixture.
-2. Owner C renders the frozen demo and connects local OMM uploads.
-3. Owners A, B, and C verify that a selected encounter flows from screening through the risk and maneuver calculations to the app, then rehearse the offline demo.
+2. Owner C adds collision probability, maneuver, and fuel results to the selected encounter after Owner B's interfaces are available.
+3. Owners A, B, and C verify the integrated flow and rehearse the offline demo.
 
-Codex implemented the Owner A backend, fixtures, and validation tests. The demo reproduced the published SOCRATES miss distance to its displayed precision when screened using the same reference elements.
+Codex implemented the Owner A backend, fixtures, and validation tests, then added the Streamlit interface, Plotly visualizations, and a test that switches between both encounters. The demo reproduced the published SOCRATES miss distance to its displayed precision when screened using the same reference elements.

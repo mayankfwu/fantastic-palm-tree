@@ -1,0 +1,8 @@
+numpy
+pandas
+plotly
+pytest
+requests
+scipy
+sgp4
+streamlit>=1.67
