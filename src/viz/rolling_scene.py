@@ -12,7 +12,7 @@ from src.orbits import find_conjunctions, propagate
 from src.orbits.impulse import BURN_DURATION_S, RECOVERY_DURATION_S, after_along_track_burn
 from src.orbits.simulation import simulated_positions
 
-from .encounter import CONTACT_KM, EARTH_RADIUS_KM
+from .encounter import CONTACT_KM, EARTH_RADIUS_KM, SAFE_MISS_KM
 
 WINDOW_S = 6000
 CLOSE_PASS_KM = 5.0
@@ -40,6 +40,34 @@ def _closest_near(predicted_time, primary_path, secondary_path):
     return predicted_time + timedelta(seconds=float(offset)), distance
 
 
+def _select_staged_burn(primary, staged, start, end, recovery_time):
+    """Choose a finite prograde burn in m/s using refined UTC passes and miss distances in km."""
+    first_contact = staged[0][1].contact_time
+    best = None
+    best_miss = -np.inf
+    # Try the familiar burn first, then use more lead time before increasing fuel.
+    for lead_minutes, dv_mps in ((10, 10.0), (20, 10.0), (20, 20.0)):
+        burn_time = max(start, first_contact - timedelta(minutes=lead_minutes))
+        try:
+            # Earlier playback blocks must still check the satellite's last staged pass.
+            path = after_along_track_burn(
+                primary, burn_time, max(end, recovery_time), dv_mps, recovery_time=recovery_time,
+            )
+        except ValueError:
+            continue
+        passes = {
+            index: _closest_near(item.contact_time, path, partial(simulated_positions, item, primary))
+            for index, item in staged
+        }
+        worst_miss = min(miss for _, miss in passes.values())
+        if all(np.isfinite(miss) for _, miss in passes.values()) and worst_miss > best_miss:
+            best = burn_time, dv_mps, path, passes
+            best_miss = worst_miss
+            if worst_miss >= SAFE_MISS_KM:
+                break
+    return best
+
+
 def orbit_window(satellites, debris, start, sequence, *, show_timeline=True, simulated=(), avoid_simulated=False) -> dict:
     """Build a 100-minute block of TEME km positions and check for contact."""
     first_s = sequence * WINDOW_S
@@ -52,28 +80,29 @@ def orbit_window(satellites, debris, start, sequence, *, show_timeline=True, sim
         for _, primary in satellites
         for event in find_conjunctions(primary, debris_models, first_time, WINDOW_S / 3600, screen_km=CLOSE_PASS_KM)
     ] if debris_models else []
-    staged = [
-        item for item in sorted(simulated, key=lambda item: item.contact_time)
-        if np.isfinite(propagate(satellites[item.satellite_index][1], [item.contact_time])[0]).all()
-    ]
+    staged_by_satellite = {}
+    for index, item in sorted(enumerate(simulated), key=lambda entry: entry[1].contact_time):
+        if np.isfinite(propagate(satellites[item.satellite_index][1], [item.contact_time])[0]).all():
+            staged_by_satellite.setdefault(item.satellite_index, []).append((index, item))
     burned = {}
     burn_times = {}
     maneuver_phases = {}
     focus_offsets = set()
-    if avoid_simulated:
-        last_contacts = {item.satellite_index: item.contact_time for item in staged}
-        for item in staged:
-            index = item.satellite_index
-            if index not in burned:
-                burn_time = max(start, item.contact_time - timedelta(minutes=10))
-                recovery_time = last_contacts[index] + timedelta(minutes=5)
-                try:
-                    burned[index] = after_along_track_burn(
-                        satellites[index][1], burn_time, end + timedelta(minutes=2), 10.0,
-                        recovery_time=recovery_time,
-                    )
-                except ValueError:
-                    continue
+    contacts = []
+    encounter_times = set()
+    maneuver_passes = []
+    for index, staged in staged_by_satellite.items():
+        refined = {}
+        recovery_time = staged[-1][1].contact_time + timedelta(minutes=5)
+        if first_time > recovery_time + timedelta(seconds=RECOVERY_DURATION_S):
+            continue  # The nominal orbit has already been restored.
+        if avoid_simulated:
+            selected = _select_staged_burn(
+                satellites[index][1], staged, start, end + timedelta(minutes=2), recovery_time,
+            )
+            if selected is not None:
+                burn_time, dv_mps, path, refined = selected
+                burned[index] = path
                 burn_times[index] = burn_time
                 burn_s = (burn_time - start).total_seconds()
                 recovery_s = (recovery_time - start).total_seconds()
@@ -86,11 +115,20 @@ def orbit_window(satellites, debris, start, sequence, *, show_timeline=True, sim
                     offset for offset in (recovery_s, recovery_s + RECOVERY_DURATION_S)
                     if first_s <= offset <= first_s + WINDOW_S
                 )
+        for item_index, item in staged:
+            moment, miss = refined.get(item_index, (item.contact_time, 0.0))
+            if first_time <= moment <= end:
+                offset = (moment - start).total_seconds()
+                encounter_times.add(offset)
+                if miss <= CONTACT_KM:
+                    contacts.append((moment, index, "simulated"))
+                elif item_index in refined:
+                    maneuver_passes.append({
+                        "time": offset, "primary": index, "debris": len(satellites) + len(debris) + item_index,
+                        "missKm": miss, "dvMps": dv_mps,
+                    })
     indices = {model.satnum: index for index, (_, model) in enumerate(satellites)}
     debris_by_id = {model.satnum: model for model in debris_models}
-    contacts = []
-    encounter_times = set()
-    avoided_passes = []
     for event in catalog_encounters:
         index = indices[event.primary_id]
         moment, miss = event.tca, event.miss_km
@@ -103,25 +141,6 @@ def orbit_window(satellites, debris, start, sequence, *, show_timeline=True, sim
                 encounter_times.add((moment - start).total_seconds())
             if miss <= CONTACT_KM:
                 contacts.append((moment, index, "predicted"))
-    for item in staged:
-        index = item.satellite_index
-        if first_time <= item.contact_time <= end:
-            moment, miss = item.contact_time, 0.0
-            if index in burned:
-                moment, miss = _closest_near(
-                    moment, burned[index], partial(simulated_positions, item, satellites[index][1]),
-                )
-            if first_time <= moment <= end:
-                offset = (moment - start).total_seconds()
-                encounter_times.add(offset)
-                if miss <= CONTACT_KM:
-                    contacts.append((moment, index, "simulated"))
-                elif index in burned and np.isfinite(miss):
-                    avoided_passes.append({
-                        "time": offset, "primary": index,
-                        "debris": len(satellites) + len(debris) + simulated.index(item),
-                        "missKm": miss,
-                    })
     contact_time, primary_index, impact_kind = min(contacts, default=(None, None, None))
     focus_offsets.update(
         moment + delta for moment in encounter_times for delta in range(-12, 13)
@@ -148,7 +167,8 @@ def orbit_window(satellites, debris, start, sequence, *, show_timeline=True, sim
         "frameIntervalMs": 220 if simulated else 65,
         "clockStepS": 60,
         "encounterTimes": sorted(encounter_times),
-        "avoidedPasses": avoided_passes,
+        "maneuverPasses": maneuver_passes,
+        "safeMissKm": SAFE_MISS_KM,
         "earthRadiusKm": EARTH_RADIUS_KM,
         "live": True,
         "continuous": True,
@@ -185,10 +205,11 @@ def _scene_component():
 def render_continuous_orbit(satellites, debris, start, key, *, show_timeline=True, simulated=()):
     """Serve succeeding blocks in TEME km from a fixed UTC playback start."""
     state_key = "rolling_orbit_window"
-    player_key = f"{key}-orbit-player"
+    # The version also invalidates an old session's cached packet and iframe together.
+    player_key = f"{key}-orbit-player-v2"
     avoid_simulated = st.session_state.get("avoid_simulated_scene") == key
-    if st.session_state.get(state_key, (None,))[0] != key:
-        st.session_state[state_key] = key, orbit_window(
+    if st.session_state.get(state_key, (None,))[0] != player_key:
+        st.session_state[state_key] = player_key, orbit_window(
             satellites, debris, start, 0, show_timeline=show_timeline, simulated=simulated,
             avoid_simulated=avoid_simulated,
         )
@@ -198,8 +219,8 @@ def render_continuous_orbit(satellites, debris, start, key, *, show_timeline=Tru
         """Advance the requested unitless window sequence by one."""
         active_key, current = st.session_state[state_key]
         requested = st.session_state[player_key].get("advance")
-        if active_key == key and requested == current["sequence"] + 1 and not current["frames"][-1]["impact"]:
-            st.session_state[state_key] = key, orbit_window(
+        if active_key == player_key and requested == current["sequence"] + 1 and not current["frames"][-1]["impact"]:
+            st.session_state[state_key] = player_key, orbit_window(
                 satellites, debris, start, requested, show_timeline=show_timeline, simulated=simulated,
                 avoid_simulated=avoid_simulated,
             )

@@ -9,10 +9,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.contracts import Conjunction
-from src.viz.encounter import CONTACT_KM, avoidance_preview
+from src.viz.encounter import CONTACT_KM, SAFE_MISS_KM, avoidance_preview
 
 SIGMA_KM = 1.0
-SAFE_MISS_KM = 5.0
 ELEVATED_RISK_PERCENT = 0.001
 HIGH_RISK_PERCENT = 0.01
 _OPTIONAL_MODULES = {
@@ -40,11 +39,18 @@ def render_burn_replay(
     original_miss = 0 if simulate_impact else encounter.miss_km
     metrics = st.columns(2)
     metrics[0].metric("Original miss", f"{original_miss:.3f} km")
-    metrics[1].metric("Recomputed miss after burn", f"{miss_km:.3f} km")
+    displayed_miss = f"{miss_km:.3f} km"
+    if miss_km < SAFE_MISS_KM and round(miss_km, 3) == SAFE_MISS_KM:
+        displayed_miss = f"< {SAFE_MISS_KM:g} km"
+    elif miss_km > CONTACT_KM and round(miss_km, 3) == CONTACT_KM:
+        displayed_miss = f"> {CONTACT_KM:g} km"
+    metrics[1].metric("Recomputed miss after burn", displayed_miss)
     if miss_km <= CONTACT_KM:
-        st.warning("This burn still reaches the simulator’s contact threshold.")
+        st.error(f"Collision at closest approach. The objects came within the {CONTACT_KM * 1000:g} m contact distance.")
+    elif miss_km < SAFE_MISS_KM:
+        st.warning(f"Unsafe close pass. Successful avoidance requires at least {SAFE_MISS_KM:g} km at closest approach.")
     else:
-        st.success("The burned trajectory clears the simulator’s 10 m contact threshold for this encounter.")
+        st.success(f"Successful avoidance. The trajectory meets the {SAFE_MISS_KM:g} km safety clearance for this encounter.")
     st.caption(
         f"Burn at {burn_time:%Y-%m-%d %H:%M:%S} UTC. "
         f"New closest approach at {new_tca:%H:%M:%S} UTC. "

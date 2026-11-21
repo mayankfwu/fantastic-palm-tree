@@ -266,16 +266,51 @@ def test_applied_avoidance_replays_a_burn_and_recomputes_contact():
     assert scene["frames"][-1]["positions"][0] == scene["nominalPath"][-1]
     assert scene["maneuverPhases"]["0"] == [-1200, -1140, 300, 2100]
     assert not any(frame["impact"] for frame in scene["frames"])
-    assert scene["avoidedPasses"][0]["missKm"] > 5
+    assert scene["maneuverPasses"][0]["missKm"] >= scene["safeMissKm"] == 5
+    assert any("Successful avoidance" in notice.value for notice in app.success)
     metrics = {metric.label: metric.value for metric in app.metric}
     assert metrics["Original miss"] == "0.000 km"
     assert float(metrics["Recomputed miss after burn"].split()[0]) > 5
+
+    next(widget for widget in app.number_input if widget.label == "Along-track Δv (m/s)").set_value(1.0).run()
+    assert not app.exception
+    scene = _scene_data(app.get("iframe")[0].proto.srcdoc)
+    assert 0.01 < scene["maneuverPasses"][0]["missKm"] < scene["safeMissKm"]
+    assert not any(frame["impact"] for frame in scene["frames"])
+    assert any("Unsafe close pass" in notice.value for notice in app.warning)
+    assert not app.success
 
     next(widget for widget in app.number_input if widget.label == "Along-track Δv (m/s)").set_value(0.0).run()
     assert not app.exception
     scene = _scene_data(app.get("iframe")[0].proto.srcdoc)
     assert scene["frames"][-1]["impact"]
     assert scene["frames"][-1]["distance"] == pytest.approx(0)
+    assert any("Collision at closest approach" in notice.value for notice in app.error)
+    assert not app.success
+
+
+@pytest.mark.parametrize(("miss_km", "notice", "display"), [
+    (0.01, "error", "0.010 km"),
+    (0.010001, "warning", "> 0.01 km"),
+    (4.999999, "warning", "< 5 km"),
+    (5.0, "success", "5.000 km"),
+])
+def test_burn_result_uses_unrounded_clearance(monkeypatch, miss_km, notice, display):
+    """Classify the refined minimum in km on both sides of the contact and safety limits."""
+    from src.viz import avoidance
+
+    moment = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+    monkeypatch.setattr(avoidance, "avoidance_preview", lambda *a, **kw: ("", None, miss_km, moment, moment))
+    app = AppTest.from_string(
+        """
+from types import SimpleNamespace
+from src.viz.avoidance import render_burn_replay
+render_burn_replay(None, None, SimpleNamespace(miss_km=0), "Test", close_up=True)
+"""
+    ).run()
+    assert not app.exception
+    assert app.metric[1].value == display
+    assert len(getattr(app, notice)) == 1
 
 
 def test_part_b_panel_updates_for_each_guided_encounter():
@@ -362,10 +397,10 @@ def test_offline_catalog_avoids_staged_debris_by_default():
     assert avoided["burnOffsetS"] is not None
     assert avoided["frames"][-1]["time"] == 6000
     assert not any(frame["impact"] for frame in avoided["frames"])
-    assert len(avoided["avoidedPasses"]) == 3
+    assert len(avoided["maneuverPasses"]) == 3
     assert all(
-        event["time"] in avoided["encounterTimes"] and event["missKm"] > 0.01
-        for event in avoided["avoidedPasses"]
+        event["time"] in avoided["encounterTimes"] and event["missKm"] >= avoided["safeMissKm"] == 5
+        for event in avoided["maneuverPasses"]
     )
     assert any(
         following["time"] - current["time"] == 1

@@ -14,7 +14,7 @@ from src.orbits.catalog import CACHE_SECONDS, load_named_catalog
 from src.orbits.demo import load_demo_scenario, load_offline_catalogs
 from src.orbits.simulation import MAX_SIMULATED_DEBRIS, place_simulated_debris
 from src.viz.avoidance import render_avoidance, render_burn_replay
-from src.viz.encounter import CONTACT_KM, close_up_html, orbit_html, separation_figure
+from src.viz.encounter import CONTACT_KM, SAFE_MISS_KM, close_up_html, orbit_html, separation_figure
 from src.viz.rolling_scene import render_continuous_orbit
 
 CATALOG_RETRY_SECONDS = 60
@@ -157,8 +157,8 @@ def render_catalog_scene(*, offline: bool):
     render_continuous_orbit(satellites, debris, start, scene_key, show_timeline=offline, simulated=simulated)
     if avoid_simulated:
         st.caption(
-            f"{len(simulated)} simulated debris added. A finite +10 m/s burn changes each affected satellite’s "
-            "trajectory. After its staged encounters, a gradual recovery brings it back to its original orbit."
+            f"{len(simulated)} simulated debris added. Automatic burns target at least {SAFE_MISS_KM:g} km "
+            "of clearance at each staged pass. Playback pauses on physical contact."
         )
     elif simulated:
         st.caption(f"{len(simulated)} simulated debris added. Playback stops at the first staged or predicted contact.")

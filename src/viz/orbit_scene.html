@@ -82,7 +82,7 @@
     <div id="avoidance-windows">
       <aside id="avoidance-panel" hidden aria-label="Avoidance close-up">
         <strong>Avoidance close-up</strong>
-        <canvas id="avoidance-scene" aria-label="Satellite and simulated debris during the avoided pass"></canvas>
+        <canvas id="avoidance-scene" aria-label="Satellite and debris during the avoidance maneuver"></canvas>
         <small id="avoidance-distance"></small>
       </aside>
       <aside id="encounter-panel" hidden aria-label="Guided-style 3D encounter and separation">
@@ -102,7 +102,7 @@ const {
     frames, labels, earthRadiusKm, satelliteCount, live = false, continuous = false, sequence = 0,
     showTimeline = true, simulatedCount = 0, frameIntervalMs = 65, clockStepS = earthRadiusKm ? 60 : 0.05,
     nominalPath = [], burnOffsetS = null, maneuverPhases = {},
-    encounterTimes = [], avoidedPasses = [],
+    encounterTimes = [], safeMissKm = 5, avoidedPasses = [], maneuverPasses = avoidedPasses,
 } = __ENCOUNTER_DATA__;
 const scene = document.getElementById("scene");
 const graph = document.getElementById("separation");
@@ -124,7 +124,7 @@ const encounterPanel = document.getElementById("encounter-panel");
 const encounterScene = document.getElementById("encounter-scene");
 const encounterSeparation = document.getElementById("encounter-separation");
 const encounterDistance = document.getElementById("encounter-distance");
-let recentAvoidance = avoidedPasses;
+let recentPasses = maneuverPasses;
 if (earthRadiusKm) {
     graph.hidden = true;
     document.querySelector("main").classList.add("orbit-only");
@@ -408,7 +408,15 @@ function drawScene(frame, canvas = scene, focus = null) {
 }
 
 function drawAvoidance(frame) {
-    const pass = recentAvoidance.find(event => Math.abs(frame.time - event.time) <= 12);
+    let pass;
+    let nearestSeconds = 12;
+    for (const event of recentPasses) {
+        const seconds = Math.abs(frame.time - event.time);
+        if (seconds < nearestSeconds || (seconds === nearestSeconds && (!pass || event.missKm < pass.missKm))) {
+            pass = event;
+            nearestSeconds = seconds;
+        }
+    }
     const primary = pass && frame.positions[pass.primary];
     const debris = pass && frame.positions[pass.debris];
     avoidancePanel.hidden = !primary || !debris;
@@ -416,7 +424,8 @@ function drawAvoidance(frame) {
     if (avoidancePanel.hidden) return;
     drawScene(frame, avoidanceScene, pass);
     const separation = Math.hypot(...primary.map((coordinate, i) => coordinate - debris[i]));
-    avoidanceDistance.textContent = `${labels[pass.primary]} · ${separation.toFixed(2)} km separation`;
+    const burn = Number.isFinite(pass.dvMps) ? ` · Δv ${pass.dvMps > 0 ? "+" : ""}${pass.dvMps} m/s` : "";
+    avoidanceDistance.textContent = `${labels[pass.primary]} · ${separation.toFixed(2)} km separation${burn}`;
     drawScene(frame, encounterScene, {...pass, guided: true});
     const samples = frames.filter(sample => Math.abs(sample.time - pass.time) <= 12)
         .flatMap(sample => {
@@ -426,7 +435,10 @@ function drawAvoidance(frame) {
                 : [];
         });
     drawGraph({time: frame.time, distance: separation}, encounterSeparation, samples, pass.time);
-    encounterDistance.textContent = `Closest approach: ${pass.missKm.toFixed(2)} km`;
+    const cleared = pass.missKm >= safeMissKm;
+    const rounded = pass.missKm.toFixed(3);
+    const miss = !cleared && Number(rounded) >= safeMissKm ? `< ${safeMissKm}` : rounded;
+    encounterDistance.textContent = `${cleared ? "Clearance met" : "Too close"} · Minimum ${miss} km · Target ${safeMissKm} km`;
 }
 
 function drawTracking(frame) {
@@ -660,9 +672,9 @@ window.addEventListener("message", event => {
     index -= drop;
     frames.push(...packet.frames.filter(frame => frame.time > lastTime));
     addSlowWindows(packet.encounterTimes ?? []);
-    recentAvoidance = [
-        ...recentAvoidance.filter(event => event.time + 12 >= simulatedTime),
-        ...(packet.avoidedPasses ?? []),
+    recentPasses = [
+        ...recentPasses.filter(event => event.time + 12 >= simulatedTime),
+        ...(packet.maneuverPasses ?? packet.avoidedPasses ?? []),
     ];
     packetSequence = packet.sequence;
     extent = sceneExtent();

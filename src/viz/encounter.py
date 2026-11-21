@@ -15,6 +15,7 @@ PRIMARY_COLOR = "#62daf4"
 DEBRIS_COLOR = "#ffbb70"
 EARTH_RADIUS_KM = 6378.137
 CONTACT_KM = 0.01
+SAFE_MISS_KM = 5.0
 
 
 def _sample_positions(primary, secondary, encounter, offsets_s, simulate_impact):
@@ -136,8 +137,8 @@ def avoidance_preview(
         earth_radius_km=0 if close_up else EARTH_RADIUS_KM,
         nominal_path=nominal, burn_offset_s=burn_offset_s, contact_offset_s=contact,
         encounter_offset_s=new_offset,
-        avoided_passes=(
-            [{"time": new_offset, "primary": 0, "debris": 1, "missKm": new_miss}]
+        maneuver_passes=(
+            [{"time": new_offset, "primary": 0, "debris": 1, "missKm": new_miss, "dvMps": dv_mps}]
             if simulate_impact and contact is None and not close_up else ()
         ),
         maneuver_phases=[burn_offset_s, burn_offset_s + BURN_DURATION_S,
@@ -147,6 +148,7 @@ def avoidance_preview(
     graph.add_scatter(x=search.tolist(), y=original.tolist(), name="Original", line=dict(dash="dot"))
     graph.add_scatter(x=search.tolist(), y=changed.tolist(), name="After burn")
     graph.add_scatter(x=[new_offset], y=[new_miss], name="New closest approach", mode="markers")
+    graph.add_hline(y=SAFE_MISS_KM, line_dash="dash", annotation_text=f"{SAFE_MISS_KM:g} km safety clearance")
     graph.update_layout(
         template="plotly_dark", height=420, margin=dict(l=48, r=20, b=58, t=25),
         xaxis_title="Seconds from original closest approach", yaxis_title="Separation (km)",
@@ -157,7 +159,7 @@ def avoidance_preview(
 def _scene_html(
     offsets_s, primary_path, debris_path, primary_name, debris_id, simulate_impact, *, earth_radius_km=0,
     nominal_path=None, burn_offset_s=None, contact_offset_s=None,
-    maneuver_phases=None, encounter_offset_s=0.0, avoided_passes=(),
+    maneuver_phases=None, encounter_offset_s=0.0, maneuver_passes=(),
 ):
     """Embed synchronized trajectories in km and playback times in seconds."""
     if simulate_impact:
@@ -172,7 +174,8 @@ def _scene_html(
         "earthRadiusKm": earth_radius_km,
         "clockStepS": 60 if earth_radius_km else 0.05,
         "encounterTimes": [encounter_offset_s],
-        "avoidedPasses": avoided_passes,
+        "maneuverPasses": maneuver_passes,
+        "safeMissKm": SAFE_MISS_KM,
         "nominalPath": nominal_path.tolist() if nominal_path is not None else [],
         "burnOffsetS": burn_offset_s,
         "maneuverPhases": {0: maneuver_phases} if maneuver_phases is not None else {},

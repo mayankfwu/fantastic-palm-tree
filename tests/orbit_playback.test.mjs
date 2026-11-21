@@ -4,11 +4,10 @@ import {readFileSync} from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-test("a delayed orbit window resumes playback only if the clock is still waiting", () => {
+/** Mount the scene with positions in km and a controllable clock in milliseconds. */
+function mountPlayer(packet) {
     const template = readFileSync(new URL("../src/viz/orbit_scene.html", import.meta.url), "utf8");
     const script = template.split("<script>")[1].split("</script>")[0];
-    const frames = [0, 60, 120].map(time => ({time, positions: [[7000, 0, 0]], impact: false}));
-    const packet = {frames, labels: ["Satellite"], earthRadiusKm: 6378, satelliteCount: 1, continuous: true};
     const elements = new Map();
     const graphics = new Proxy({}, {
         get: (_, key) => key === "createRadialGradient" ? () => ({addColorStop() {}}) : () => {},
@@ -44,14 +43,22 @@ test("a delayed orbit window resumes playback only if the clock is still waiting
         animations.clear();
         callbacks.forEach(callback => callback(now));
     }
-    function deliver(sequence, lastTime, endTime, impact = false) {
+    function deliver(sequence, lastTime, endTime, impact = false, maneuverPasses = []) {
+        const initial = packet.frames[0];
         onMessage({source: parent, data: {
             type: "orbit-block",
-            packet: {sequence, frames: [{...frames[0], time: lastTime}, {...frames[0], time: endTime, impact}]},
+            packet: {sequence, maneuverPasses, frames: [{...initial, time: lastTime}, {...initial, time: endTime, impact}]},
         }});
     }
     vm.runInContext(script.replace("__ENCOUNTER_DATA__", JSON.stringify(packet)), context);
+    return {advance, animations, deliver, element};
+}
 
+test("a delayed orbit window resumes playback only if the clock is still waiting", () => {
+    const frames = [0, 60, 120].map(time => ({time, positions: [[7000, 0, 0]], impact: false}));
+    const {advance, animations, deliver, element} = mountPlayer({
+        frames, labels: ["Satellite"], earthRadiusKm: 6378, satelliteCount: 1, continuous: true,
+    });
     advance(1000);
     assert.equal(animations.size, 0);
     element("pause").onclick();
@@ -71,4 +78,30 @@ test("a delayed orbit window resumes playback only if the clock is still waiting
     advance(1000);
     assert.equal(animations.size, 0);
     assert.match(element("time").textContent, /Contact snapshot.*360\.00 s/);
+});
+
+test("initial and streamed passes use the refined miss distance for the required clearance", () => {
+    const frames = [0, 5, 10].map(time => ({time, positions: [[7000, 0, 0], [7005, 0, 0]], impact: false}));
+    const pass = {time: 0, primary: 0, debris: 1, missKm: 4.99999, dvMps: 10};
+    const {element, deliver} = mountPlayer({
+        frames, labels: ["Satellite", "Debris"], earthRadiusKm: 6378, satelliteCount: 1, continuous: true,
+        safeMissKm: 5, maneuverPasses: [pass],
+    });
+    assert.equal(element("encounter-panel").hidden, false);
+    assert.equal(element("avoidance-panel").hidden, false);
+    assert.match(element("encounter-distance").textContent, /Too close · Minimum < 5 km · Target 5 km/);
+    assert.match(element("avoidance-distance").textContent, /Δv \+10 m\/s/);
+
+    deliver(1, 10, 11, false, [{...pass, time: 11, missKm: 5.0, dvMps: -2}]);
+    element("timeline").value = "3";
+    element("timeline").oninput();
+    assert.match(element("encounter-distance").textContent, /Clearance met · Minimum 5.000 km · Target 5 km/);
+    assert.match(element("avoidance-distance").textContent, /Δv -2 m\/s/);
+    assert.doesNotMatch(element("time").textContent, /Contact/);
+
+    const alternate = mountPlayer({
+        frames, labels: ["Satellite", "Debris"], earthRadiusKm: 6378, satelliteCount: 1,
+        safeMissKm: 6, maneuverPasses: [{...pass, missKm: 5.5}],
+    });
+    assert.match(alternate.element("encounter-distance").textContent, /Too close · Minimum 5.500 km · Target 6 km/);
 });
