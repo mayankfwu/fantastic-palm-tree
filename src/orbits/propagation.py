@@ -21,8 +21,9 @@ def _propagate_julian(sat, dates, fractions):
     if np.any(np.abs(epoch_age) > 3):
         warnings.warn("Requested propagation is over three days from the SGP4 epoch", stacklevel=2)
     errors, positions, velocities = sat.sgp4_array(dates, fractions)
-    positions[errors != 0] = np.nan
-    velocities[errors != 0] = np.nan
+    invalid = (errors != 0) | ~np.isfinite(positions).all(axis=1) | ~np.isfinite(velocities).all(axis=1)
+    positions[invalid] = np.nan
+    velocities[invalid] = np.nan
     return positions, velocities
 
 

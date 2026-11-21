@@ -44,16 +44,65 @@ def test_cache_refresh_and_skip_invalid(monkeypatch, tmp_path, gp_response, capl
     assert request.call_count == 2
 
 
-def test_download_retries_only_transient_failures(monkeypatch, tmp_path):
+@pytest.mark.parametrize("status_code", [403, 429])
+def test_download_retries_only_transient_failures(monkeypatch, tmp_path, status_code):
     """Terminate after a unitless HTTP denial, even after a transient failure."""
-    request = Mock(side_effect=[requests.Timeout, Mock(status_code=403)])
+    request = Mock(side_effect=[requests.Timeout, Mock(status_code=status_code)])
     monkeypatch.setattr(catalog.requests, "get", request)
     monkeypatch.setattr(catalog.time, "sleep", Mock())
     monkeypatch.setattr(catalog, "CACHE_DIR", tmp_path)
-    with pytest.raises(requests.HTTPError, match="403"):
+    with pytest.raises(requests.HTTPError, match=str(status_code)):
         catalog.load_catalog("cosmos-2251-debris")
     assert request.call_count == 2
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("invalid_records", [[], [{}]])
+def test_unusable_download_preserves_cache(monkeypatch, tmp_path, gp_response, invalid_records, caplog):
+    """An HTTP 200 with unusable OMM records leaves the previous cache intact."""
+    group = "cosmos-2251-debris"
+    path = tmp_path / f"{group}.json"
+    path.write_text(json.dumps(gp_response))
+    stale = catalog.time.time() - 7201
+    os.utime(path, (stale, stale))
+    reply = Mock(status_code=200)
+    reply.json.return_value = invalid_records
+    monkeypatch.setattr(catalog, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(catalog.requests, "get", Mock(return_value=reply))
+    assert [sat.satnum for sat in catalog.load_catalog(group)] == [22675]
+    assert "Using stale CelesTrak cache" in caplog.text
+    assert json.loads(path.read_text()) == gp_response
+    assert path.stat().st_mtime == pytest.approx(stale)
+
+
+def test_connection_failure_uses_stale_elements(monkeypatch, tmp_path, gp_response, caplog):
+    """Use valid cached elements with a warning when the connection fails."""
+    group = "cosmos-2251-debris"
+    path = tmp_path / f"{group}.json"
+    path.write_text(json.dumps(gp_response))
+    stale = catalog.time.time() - 7201
+    os.utime(path, (stale, stale))
+    monkeypatch.setattr(catalog, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(catalog.time, "sleep", Mock())
+    request = Mock(side_effect=requests.ConnectionError("offline"))
+    monkeypatch.setattr(catalog.requests, "get", request)
+    assert [sat.satnum for sat in catalog.load_catalog(group)] == [22675]
+    assert request.call_count == 3
+    assert "offline" in caplog.text and "Using stale CelesTrak cache" in caplog.text
+
+
+def test_non_json_group_response_names_group(monkeypatch, tmp_path):
+    """Explain a plain-text GP reply with the requested group name."""
+    group = "unknown-group"
+    reply = requests.Response()
+    reply.status_code = 200
+    reply._content = b"No GP data found"
+    request = Mock(return_value=reply)
+    monkeypatch.setattr(catalog, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(catalog.requests, "get", request)
+    with pytest.raises(ValueError, match=f"non-JSON.*{group}"):
+        catalog.load_catalog(group)
+    request.assert_called_once()
 
 
 def test_propagate_iss_like():
@@ -80,12 +129,13 @@ def test_propagate_iss_like():
 def test_propagate_masks_errors():
     """Replace failed TEME km and km/s rows while preserving valid rows."""
     satellite = Mock(jdsatepoch=2461365.5, jdsatepochF=0.5)
-    satellite.sgp4_array.return_value = (
-        np.array([0, 6]), np.ones((2, 3)), np.ones((2, 3)),
-    )
-    position, velocity = propagate(satellite, [EPOCH, EPOCH + timedelta(seconds=1)])
+    velocities = np.ones((3, 3))
+    velocities[2, 0] = np.inf
+    satellite.sgp4_array.return_value = np.array([0, 6, 0]), np.ones((3, 3)), velocities
+    times = [EPOCH + timedelta(seconds=offset) for offset in range(3)]
+    position, velocity = propagate(satellite, times)
     np.testing.assert_array_equal(position[0], [1, 1, 1])
-    assert np.isnan(position[1]).all() and np.isnan(velocity[1]).all()
+    assert np.isnan(position[1:]).all() and np.isnan(velocity[1:]).all()
 
 
 class LinearObject:
@@ -137,6 +187,22 @@ def test_screening_refines_between_samples_and_ranks():
     assert (result[0].tca - start).total_seconds() == pytest.approx(29, abs=0.001)
     assert result[0].miss_km == pytest.approx(1, abs=0.0001)
     assert result[0].rel_speed_kms == pytest.approx(15)
+
+
+def test_screening_rejects_nonfinite_refinement_velocity(monkeypatch):
+    """A failed scalar state cannot yield a conjunction with a NaN speed."""
+    start = EPOCH.replace(minute=0, second=0, microsecond=0)
+    primary = LinearObject(1, 0, 0, 0)
+    secondary = LinearObject(2, 15, 29, 1)
+    scalar_sgp4 = secondary.sgp4
+
+    def invalid_velocity(jd, fraction):
+        """Return a finite TEME position with an unusable velocity in km/s."""
+        error, position, _ = scalar_sgp4(jd, fraction)
+        return error, position, [np.nan, 0, 0]
+
+    monkeypatch.setattr(secondary, "sgp4", invalid_velocity)
+    assert find_conjunctions(primary, [secondary], start, 1 / 60, 60, 5) == []
 
 
 def test_frozen_demo_matches_reference_and_local_minimum():

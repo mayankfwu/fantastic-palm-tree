@@ -54,8 +54,8 @@ def _satellite_from_omm(record: dict) -> Satrec:
     catalog_id = fields["NORAD_CAT_ID"]
     if not str(catalog_id).isascii() or not str(catalog_id).isdecimal():
         raise ValueError("NORAD_CAT_ID must be a positive integer")
-    if not 0 < int(catalog_id) <= 999_999_999:
-        raise ValueError("NORAD_CAT_ID must have one to nine digits")
+    if not 0 < int(catalog_id) <= 339_999:
+        raise ValueError("NORAD_CAT_ID must be between 1 and 339999 for SGP4")
     if fields["MEAN_MOTION"] <= 0 or not 0 <= fields["ECCENTRICITY"] < 1:
         raise ValueError("MEAN_MOTION must be positive and ECCENTRICITY must be in [0, 1)")
     if not 0 <= fields["INCLINATION"] <= 180:

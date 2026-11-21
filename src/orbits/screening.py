@@ -81,7 +81,11 @@ def _relative_state(primary, secondary, jd, fraction):
     error2, position2, velocity2 = secondary.sgp4(jd, fraction)
     if error1 or error2:
         return None
-    return np.subtract(position2, position1), np.subtract(velocity2, velocity1)
+    position = np.subtract(position2, position1)
+    velocity = np.subtract(velocity2, velocity1)
+    if not (np.isfinite(position).all() and np.isfinite(velocity).all()):
+        return None
+    return position, velocity
 
 
 def _refine(primary, secondary, start, jd, fraction, left, sample, right, screen_km):

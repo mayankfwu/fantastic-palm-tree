@@ -28,6 +28,8 @@ The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMO
 - `from src.orbits import load_catalog, propagate, find_conjunctions`. The loader fetches CelesTrak GP JSON and caches each group locally for two hours. Propagation accepts timezone-aware UTC times and returns TEME positions in km and velocities in km/s. Failed samples become NaN. Screening sorts encounters by increasing miss distance.
 - `from src.orbits.user_catalog import import_user_omm, load_user_catalog`. Import a JSON OMM object or array as `"satellite"` or `"debris"`. Import validates the whole batch before saving to SQLite. Reimporting the same NORAD ID in the same category replaces its orbital elements. Loading returns a list of SGP4 `Satrec` objects.
 - The local SQLite catalog and CelesTrak download cache are gitignored. The demo fixtures and offline test inputs belong in Git. The radial filter and time grid approximate continuous screening. Public GP data provides no covariance.
+- Owner A hardening rejects non-finite SGP4 positions or velocities during both grid propagation and refinement. HTTP 200 responses must contain usable orbital elements before replacing the local catalog cache. The orbit view uses a spherical Earth in the same TEME coordinates as the trajectories.
+- When a refresh fails, the loader logs a warning and uses an expired cache that still contains usable elements, preserving its timestamp. A non-JSON response without a usable cache raises a group-specific error. This SGP4 integration supports NORAD catalog IDs from 1 to 339999.
 
 ## Owner B — Collision risk and maneuvers
 
@@ -38,15 +40,19 @@ The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMO
 ## Owner C — Streamlit and visualization
 
 - The Streamlit app shows the frozen SCD 2 scenario and a ranked encounter table. The selected encounter drives a slow-motion 3D animation in satellite-relative km, a zoomed-out orbit view with a solid Earth in TEME km, and a separation chart in seconds from closest approach.
-- The 3D orbit view opens first. Both objects move in both views. Both 3D views hide background axes and grids. The illustrative impact option shifts the debris path to meet the satellite at closest approach and stops playback there. The ranked table always shows the orbital predictions.
+- The 3D orbit view opens first. Both objects move in both views. The close-up has a rotating distance grid labeled in km per square. The illustrative impact option shifts the debris path to meet the satellite at closest approach and stops playback there. The ranked table always shows the orbital predictions.
 - The close-up updates the object positions and the separation graph marker together while the camera remains interactive.
 - The full orbit uses the same drag and arrow-key controls during playback. Earth is shaded and hides objects on its far side.
-- The app keeps the propagated models and ranked results in Streamlit session state so selecting a different encounter avoids rerunning screening. `load_demo_scenario()` exposes the snapshot settings and models for reuse.
-- Multi-satellite selection and user-uploaded debris are deferred. For that future workflow, call `import_user_omm(upload.getvalue(), kind)`, surface validation errors, and place preferred elements first when a NORAD ID appears more than once.
+- The app caches ranked screening results across sessions with `st.cache_data` and keeps mutable SGP4 models in session state. It shows the count of debris element sets older than three days at the window start and the age of both selected objects' elements at closest approach. All snapshot records remain in the replay.
+- Turn off **Demo mode** for live CelesTrak catalogs. Search by satellite name or NORAD ID, add multiple satellites to the 3D scene, and choose a debris group and a random sample size. Resampling changes the session seed. The scene shows short debris trails when full debris orbits are hidden. Live screening uses one selected primary against the sampled debris.
+- In **Demo mode**, **Offline catalog** uses the SCD 2 and COSMOS 2251 fixtures plus bundled ISS and Tianhe records from the CelesTrak stations group. The selectable catalog and screening use the frozen scenario start and require no network or local download cache.
+- Full-orbit playback auto-starts in the guided, offline catalog, and live modes. A local Streamlit component streams successive SGP4 windows without resetting the scene or requesting fresh GP data. It stops at the earliest screened closest approach within an assumed 10 m combined radius. The guided close-up loops the selected near miss and stops on a scripted impact.
+- Live mode shows elapsed time and Play/Pause controls. The time slider is available in the demo views.
+- User-uploaded debris remains deferred. For that workflow, call `import_user_omm(upload.getvalue(), kind)`, surface validation errors, and place preferred elements first when a NORAD ID appears more than once.
 
 ### Future continuous simulation
 
-- Advance a continuous simulation clock at real-time speed by default. Live views should follow that clock without requiring a time slider.
+- Offer a real-time playback speed. Continuous full-orbit playback currently runs at accelerated speed.
 - Screen a rolling window ahead of the clock. Recheck projected approaches after each avoidance maneuver using the updated satellite trajectory.
 - Use Owner B's risk and maneuver models to trigger and apply simulated avoidance burns. Display the predicted encounter, commanded burn, and updated miss distance. Keep this workflow in the simulator.
 

@@ -1,6 +1,6 @@
 # Satellite Conjunction Explorer
 
-A hackathon simulator for satellite–debris close approaches. The offline Streamlit demo screens SCD 2 against a frozen set of 581 COSMOS 2251 debris objects. Choose an encounter and press **Play** to watch both objects move. Switch between the **3D orbit** and **3D close-up** views. Drag to rotate the close-up while the separation graph tracks playback. Turn on **Simulate an impact** to see an illustrative contact at closest approach.
+A hackathon simulator for satellite–debris close approaches. The offline Streamlit demo screens SCD 2 against a frozen set of 581 COSMOS 2251 debris objects. The **3D orbit** starts automatically and advances through successive propagation windows. Drag to rotate during playback. The **3D close-up** replays the selected encounter with a separation graph. Turn on **Simulate an impact** to see an illustrative contact that stops playback.
 
 ## Run locally
 
@@ -14,6 +14,12 @@ streamlit run app.py
 ```
 
 Run `pytest` for the offline tests. See the [contributor handoff](docs/HANDOFF.md) and [orbit validation notes](docs/ORBITS_PLAN.md).
+
+## Choose an offline or live catalog
+
+For evaluation without a connection, keep **Demo mode** on and select **Offline catalog**. It bundles SCD 2, ISS (ZARYA), CSS (TIANHE), and 581 COSMOS 2251 debris objects from CelesTrak. Select one or more satellites and sample the debris as usual. The bundled elements replay from a fixed UTC start. **Guided replay** opens the two saved SCD 2 encounters directly.
+
+Turn off **Demo mode** in the sidebar. Search **Add satellites** by name or NORAD ID and select one or more. Pick a debris group and a count, then use **Resample debris** to draw another random sample. The 3D player shows all selected objects. Turn off **Show full debris orbits** in the player to see only short debris trails. To screen ahead, choose one of your satellites and click **Screen next 24 hours**. Playback advances at accelerated speed from the UTC scenario start. It stops at a predicted contact using an assumed 10 m combined radius.
 
 ## Modeling assumptions
 
