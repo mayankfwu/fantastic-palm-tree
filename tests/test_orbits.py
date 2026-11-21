@@ -1,0 +1,203 @@
+"""Offline coverage of GP loading, TEME propagation, and encounter screening."""
+
+import json
+import os
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from unittest.mock import Mock
+
+import numpy as np
+import pytest
+import requests
+
+from src.orbits import catalog, find_conjunctions, propagate
+
+
+FIXTURES = Path(__file__).parent
+EPOCH = datetime(2026, 11, 21, 12, 11, 7, 584288, tzinfo=UTC)
+
+
+@pytest.fixture
+def gp_response():
+    """Return one valid SGP4 OMM record in standard OMM units."""
+    return json.loads((FIXTURES / "sample_gp.json").read_text())
+
+
+def test_cache_refresh_and_skip_invalid(monkeypatch, tmp_path, gp_response, caplog):
+    """Parse offline UTC OMM records and refresh a cache after two hours."""
+    reply = Mock(status_code=200)
+    reply.json.return_value = gp_response + [{}]
+    request = Mock(return_value=reply)
+    monkeypatch.setattr(catalog.requests, "get", request)
+    monkeypatch.setattr(catalog, "CACHE_DIR", tmp_path)
+    group = "cosmos-2251-debris"
+    for _ in range(2):
+        assert [sat.satnum for sat in catalog.load_catalog(group)] == [22675]
+    request.assert_called_once_with(
+        catalog.GP_URL, params={"GROUP": group, "FORMAT": "JSON"},
+        timeout=10, allow_redirects=False,
+    )
+    assert "Skipping GP record 2" in caplog.text
+    stale = catalog.time.time() - 7201
+    os.utime(tmp_path / f"{group}.json", (stale, stale))
+    assert len(catalog.load_catalog(group)) == 1
+    assert request.call_count == 2
+
+
+def test_download_retries_only_transient_failures(monkeypatch, tmp_path):
+    """Terminate after a unitless HTTP denial, even after a transient failure."""
+    request = Mock(side_effect=[requests.Timeout, Mock(status_code=403)])
+    monkeypatch.setattr(catalog.requests, "get", request)
+    monkeypatch.setattr(catalog.time, "sleep", Mock())
+    monkeypatch.setattr(catalog, "CACHE_DIR", tmp_path)
+    with pytest.raises(requests.HTTPError, match="403"):
+        catalog.load_catalog("cosmos-2251-debris")
+    assert request.call_count == 2
+    assert not list(tmp_path.iterdir())
+
+
+def test_propagate_iss_like():
+    """Check TEME array shapes, radius in km, and orbital speed in km/s."""
+    from sgp4.api import Satrec, WGS72, jday
+
+    jd, fraction = jday(2026, 11, 21, 12, 0, 0)
+    satellite = Satrec()
+    satellite.sgp4init(
+        WGS72, "i", 25544, jd - 2433281.5 + fraction, 0, 0, 0,
+        0.0005, 0, np.radians(51.6), 0, 15.5 * 2 * np.pi / 1440, 0,
+    )
+    positions, velocities = propagate(satellite, [EPOCH, EPOCH + timedelta(seconds=30)])
+    assert positions.shape == velocities.shape == (2, 3)
+    np.testing.assert_allclose(np.linalg.norm(positions, axis=1), 6780, atol=35)
+    np.testing.assert_allclose(np.linalg.norm(velocities, axis=1), 7.7, atol=0.15)
+    with pytest.warns(UserWarning, match="three days"):
+        propagate(satellite, [EPOCH + timedelta(days=4)])
+    with pytest.raises(ValueError, match="UTC"):
+        propagate(satellite, [EPOCH.replace(tzinfo=None)])
+    assert propagate(satellite, [])[0].shape == (0, 3)
+
+
+def test_propagate_masks_errors():
+    """Replace failed TEME km and km/s rows while preserving valid rows."""
+    satellite = Mock(jdsatepoch=2461365.5, jdsatepochF=0.5)
+    satellite.sgp4_array.return_value = (
+        np.array([0, 6]), np.ones((2, 3)), np.ones((2, 3)),
+    )
+    position, velocity = propagate(satellite, [EPOCH, EPOCH + timedelta(seconds=1)])
+    np.testing.assert_array_equal(position[0], [1, 1, 1])
+    assert np.isnan(position[1]).all() and np.isnan(velocity[1]).all()
+
+
+class LinearObject:
+    """Synthetic local TEME state in km and km/s for deterministic screening."""
+
+    a = 1.1
+    ecco = 0
+    radiusearthkm = 6378
+    jdsatepoch = 2461365.5
+    jdsatepochF = 0.5
+
+    def __init__(self, satnum, speed, crossing_s, miss_km):
+        """Set a constant speed in km/s, crossing in seconds, and miss in km."""
+        self.satnum = satnum
+        self.speed = speed
+        self.crossing_s = crossing_s
+        self.miss_km = miss_km
+
+    def sgp4_array(self, jd, fraction):
+        """Return synthetic TEME position and velocity over split Julian days."""
+        seconds = ((jd - self.jdsatepoch) + (fraction - 0.5)) * 86400
+        pos = np.column_stack((
+            np.full_like(seconds, 7000 + self.miss_km),
+            self.speed * (seconds - self.crossing_s),
+            np.zeros_like(seconds),
+        ))
+        vel = np.tile([0.0, self.speed, 0.0], (len(seconds), 1))
+        return np.zeros(len(seconds), dtype=int), pos, vel
+
+    def sgp4(self, jd, fraction):
+        """Return a single synthetic TEME state in km and km/s."""
+        error, position, velocity = self.sgp4_array(np.array([jd]), np.array([fraction]))
+        return error[0], position[0], velocity[0]
+
+
+def test_screening_refines_between_samples_and_ranks():
+    """Recover a sub-grid UTC TCA and rank by refined distance in km."""
+    start = EPOCH.replace(minute=0, second=0, microsecond=0)
+    primary = LinearObject(1, 0, 0, 0)
+    crossing = LinearObject(2, 15, 29, 1)
+    wider = LinearObject(3, 15, 83, 3)
+    far = LinearObject(4, 15, 45, 9)
+    high = LinearObject(5, 15, 29, 1)
+    high.a = 1.5
+    result = find_conjunctions(
+        primary, [primary, wider, crossing, far, high], start, 1 / 30, 60, 5,
+    )
+    assert [item.secondary_id for item in result] == [2, 3]
+    assert (result[0].tca - start).total_seconds() == pytest.approx(29, abs=0.001)
+    assert result[0].miss_km == pytest.approx(1, abs=0.0001)
+    assert result[0].rel_speed_kms == pytest.approx(15)
+
+
+def test_frozen_demo_matches_reference_and_local_minimum():
+    """Check offline replay, UTC TCA, and smooth TEME separation near TCA."""
+    from src.orbits.demo import SCENARIO_PATH, replay_demo
+    from src.orbits.user_catalog import _satellite_from_omm
+
+    scenario = json.loads(SCENARIO_PATH.read_text())
+    with pytest.warns(UserWarning, match="three days"):
+        result = replay_demo()
+    assert [item.secondary_id for item in result] == [34387, 36048]
+    for actual, expected in zip(result, scenario["conjunctions"], strict=True):
+        expected_tca = datetime.fromisoformat(expected["tca"])
+        assert (actual.tca - expected_tca).total_seconds() == pytest.approx(0, abs=0.005)
+        assert actual.miss_km == pytest.approx(expected["miss_km"], abs=0.001)
+        assert actual.rel_speed_kms == pytest.approx(expected["rel_speed_kms"], abs=0.001)
+
+    closest = result[0]
+    primary = _satellite_from_omm(scenario["primary_omm"])
+    raw = json.loads(SCENARIO_PATH.with_name(scenario["debris_file"]).read_text())
+    secondary = _satellite_from_omm(next(row for row in raw if row["NORAD_CAT_ID"] == 34387))
+    times = [closest.tca + timedelta(milliseconds=100 * index) for index in range(-5, 6)]
+    primary_position, _ = propagate(primary, times)
+    secondary_position, _ = propagate(secondary, times)
+    distances = np.linalg.norm(primary_position - secondary_position, axis=1)
+    assert np.all(np.diff(distances[:6]) < 0)
+    assert np.all(np.diff(distances[5:]) > 0)
+    assert distances[5] == pytest.approx(closest.miss_km, abs=0.001)
+
+    start = datetime.fromisoformat(scenario["start"])
+    offset_s = (closest.tca - start).total_seconds()
+    assert 0 < offset_s % scenario["step_s"] < scenario["step_s"]
+    reference_tca = datetime(2026, 11, 23, 14, 2, 52, 908000, tzinfo=UTC)
+    assert abs((closest.tca - reference_tca).total_seconds()) < 0.1
+    assert abs(closest.miss_km - 0.625) < 0.1
+
+
+def test_fake_conjunction_matches_contract():
+    """Deserialize the synthetic encounter with UTC TCA, km, and km/s."""
+    from src.contracts import Conjunction
+
+    fixture = FIXTURES.parent / "data" / "fixtures" / "fake_conjunction.json"
+    fields = json.loads(fixture.read_text())
+    fields["tca"] = datetime.fromisoformat(fields["tca"])
+    conjunction = Conjunction(**fields)
+    assert conjunction.tca.utcoffset() == timedelta(0)
+    assert conjunction.miss_km == 0.75
+
+
+def test_socrates_same_input_epochs():
+    """Reproduce the published UTC TCA, miss in km, and speed in km/s."""
+    from csv import DictReader
+
+    from src.orbits.user_catalog import _satellite_from_omm
+
+    with (FIXTURES / "socrates_scd2_gp.csv").open(newline="") as elements:
+        primary, secondary = map(_satellite_from_omm, DictReader(elements))
+    start = datetime(2026, 11, 23, 14, tzinfo=UTC)
+    with pytest.warns(UserWarning, match="three days"):
+        (result,) = find_conjunctions(primary, [secondary], start, 0.1, 30, 5)
+    assert result.tca.second + result.tca.microsecond / 1e6 == pytest.approx(52.908, abs=0.002)
+    assert result.tca.minute == 2
+    assert result.miss_km == pytest.approx(0.625, abs=0.001)
+    assert result.rel_speed_kms == pytest.approx(10.327, abs=0.001)

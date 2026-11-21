@@ -1,3 +1,7 @@
 venv/
 .idea/
 .mcp.json
+
+__pycache__/
+data/user_catalog.sqlite3*
+/data/cache/

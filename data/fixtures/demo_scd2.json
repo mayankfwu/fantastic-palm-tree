@@ -1,0 +1,47 @@
+{
+  "source": "CelesTrak GP JSON",
+  "groups": [
+    "resource",
+    "cosmos-2251-debris"
+  ],
+  "start": "2026-11-21T19:00:00+00:00",
+  "hours": 48,
+  "step_s": 30,
+  "screen_km": 5,
+  "primary_omm": {
+    "OBJECT_NAME": "SCD 2",
+    "OBJECT_ID": "1998-060A",
+    "EPOCH": "2026-11-21T07:32:36.948192",
+    "MEAN_MOTION": 14.45574855,
+    "ECCENTRICITY": 0.0016661,
+    "INCLINATION": 24.9938,
+    "RA_OF_ASC_NODE": 183.1205,
+    "ARG_OF_PERICENTER": 344.3401,
+    "MEAN_ANOMALY": 176.0681,
+    "EPHEMERIS_TYPE": 0,
+    "CLASSIFICATION_TYPE": "U",
+    "NORAD_CAT_ID": 25504,
+    "ELEMENT_SET_NO": 999,
+    "REV_AT_EPOCH": 48308,
+    "BSTAR": 4.6732e-05,
+    "MEAN_MOTION_DOT": 3.5e-06,
+    "MEAN_MOTION_DDOT": 0
+  },
+  "conjunctions": [
+    {
+      "primary_id": 25504,
+      "secondary_id": 34387,
+      "tca": "2026-11-23T14:02:52.911710+00:00",
+      "miss_km": 0.6616963996414363,
+      "rel_speed_kms": 10.327354370948338
+    },
+    {
+      "primary_id": 25504,
+      "secondary_id": 36048,
+      "tca": "2026-11-23T04:30:43.085263+00:00",
+      "miss_km": 3.5167334571257167,
+      "rel_speed_kms": 11.074047023495524
+    }
+  ],
+  "debris_file": "demo_cosmos_2251.json"
+}
