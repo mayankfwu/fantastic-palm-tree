@@ -12,6 +12,7 @@ from sgp4.conveniences import sat_epoch_datetime
 from src.orbits import find_conjunctions
 from src.orbits.catalog import CACHE_SECONDS, load_named_catalog
 from src.orbits.demo import load_demo_scenario, load_offline_catalogs
+from src.orbits.simulation import MAX_SIMULATED_DEBRIS, place_simulated_debris
 from src.viz.encounter import close_up_html, orbit_html, separation_figure
 from src.viz.playback import render_continuous_orbit
 
@@ -59,6 +60,18 @@ def session_catalog(group):
     return entry[1]
 
 
+def simulated_debris_controls(satellites, start):
+    """Choose how many illustrative objects to place around Earth at a UTC start."""
+    count = st.sidebar.number_input(
+        "Add simulated debris", min_value=0, max_value=MAX_SIMULATED_DEBRIS, value=0,
+        help="Adds illustrative orbital paths with staged contacts in the 3D orbit view.",
+    )
+    reshuffle = st.sidebar.button("Randomize simulated debris", disabled=count == 0)
+    if "simulated_seed" not in st.session_state or reshuffle:
+        st.session_state.simulated_seed = SystemRandom().getrandbits(64)
+    return place_simulated_debris(count, len(satellites), start, st.session_state.simulated_seed)
+
+
 def render_catalog_scene(*, offline: bool):
     """Render a selectable catalog in TEME km from a UTC playback start."""
     if offline:
@@ -93,8 +106,8 @@ def render_catalog_scene(*, offline: bool):
         try:
             catalog = session_catalog(DEBRIS_GROUPS[group])
         except (requests.RequestException, ValueError, OSError) as exc:
-            st.error(f"Could not load the debris catalog: {exc}")
-            return
+            st.warning(f"Could not load the debris catalog: {exc}. Simulated debris is still available.")
+            catalog = {}
         if "live_start" not in st.session_state:
             st.session_state.live_start = datetime.now(UTC).replace(second=0, microsecond=0)
         start = st.session_state.live_start
@@ -111,16 +124,22 @@ def render_catalog_scene(*, offline: bool):
         st.session_state.debris_seed = SystemRandom().getrandbits(64)
     debris = Random(st.session_state.debris_seed).sample(eligible, count)
     satellites = [available[catalog_id] for catalog_id in selected]
+    simulated = simulated_debris_controls(satellites, start)
     source = "Bundled CelesTrak snapshot · COSMOS 2251" if offline else "Live CelesTrak elements"
     st.caption(
         f"{source} · {len(satellites)} satellites · {count} of {len(eligible)} debris sampled "
         f"· Playback starts {start:%Y-%m-%d %H:%M} UTC"
     )
-    scene_key = sha256(repr((offline, start, [
+    scene_key = sha256(repr((offline, start, simulated, [
         (model.satnum, sat_epoch_datetime(model)) for _, model in [*satellites, *debris]
     ])).encode()).hexdigest()
-    render_continuous_orbit(satellites, debris, start, f"catalog-{scene_key}", show_timeline=offline)
-    st.caption("Playback continues until a predicted contact within the assumed 10 m radius. Drag to rotate.")
+    render_continuous_orbit(
+        satellites, debris, start, f"catalog-{scene_key}", show_timeline=offline, simulated=simulated,
+    )
+    if simulated:
+        st.caption(f"{len(simulated)} simulated debris added. Playback stops at the first staged or predicted contact.")
+    else:
+        st.caption("Playback continues until a predicted contact within the assumed 10 m radius. Drag to rotate.")
 
     primary_id = st.sidebar.selectbox(
         "Satellite to screen", selected,
@@ -226,10 +245,16 @@ def render_demo():
                 html = orbit_html(primary, secondary, encounter, satellite_name, simulate_impact=True)
                 st.iframe(html, height=480, alt="Animated 3D orbit")
             else:
+                satellites = [(satellite_name, primary)]
+                orbit_start = encounter.tca - timedelta(minutes=50)
+                simulated = simulated_debris_controls(satellites, orbit_start)
+                scene_key = f"demo-{selected}-{len(simulated)}-{st.session_state.simulated_seed}"
                 render_continuous_orbit(
-                    [(satellite_name, primary)], [(f"Debris {secondary.satnum}", secondary)],
-                    encounter.tca - timedelta(minutes=50), f"demo-{selected}",
+                    satellites, [(f"Debris {secondary.satnum}", secondary)], orbit_start,
+                    scene_key, simulated=simulated,
                 )
+                if simulated:
+                    st.caption(f"{len(simulated)} simulated debris added with staged contacts.")
             st.caption("Drag to rotate Earth and both orbits, including during playback.")
         with separation_column:
             st.subheader("Separation near closest approach")

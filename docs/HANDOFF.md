@@ -48,6 +48,7 @@ The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMO
 - In **Demo mode**, **Offline catalog** uses the SCD 2 and COSMOS 2251 fixtures plus bundled ISS and Tianhe records from the CelesTrak stations group. The selectable catalog and screening use the frozen scenario start and require no network or local download cache.
 - Full-orbit playback auto-starts in the guided, offline catalog, and live modes. A local Streamlit component streams successive SGP4 windows without resetting the scene or requesting fresh GP data. It stops at the earliest screened closest approach within an assumed 10 m combined radius. The guided close-up loops the selected near miss and stops on a scripted impact.
 - Live mode shows elapsed time and Play/Pause controls. The time slider is available in the demo views.
+- The 3D orbit offers up to 15 seed-randomized, pink simulated debris objects with staged contacts. Their illustrative paths preserve altitude and are kept out of catalog screening. Playback stops at the first staged or predicted contact.
 - User-uploaded debris remains deferred. For that workflow, call `import_user_omm(upload.getvalue(), kind)`, surface validation errors, and place preferred elements first when a NORAD ID appears more than once.
 
 ### Future continuous simulation

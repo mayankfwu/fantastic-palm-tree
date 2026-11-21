@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 
 from src.contracts import Conjunction
 from src.orbits import find_conjunctions, propagate
+from src.orbits.simulation import simulated_positions
 
 PRIMARY_COLOR = "#62daf4"
 DEBRIS_COLOR = "#ffbb70"
@@ -130,7 +131,7 @@ def _scene_html(
     return _embed_scene(data)
 
 
-def orbit_window(satellites, debris, start, sequence, *, show_timeline=True) -> dict:
+def orbit_window(satellites, debris, start, sequence, *, show_timeline=True, simulated=()) -> dict:
     """Build a 100-minute block of TEME km positions and check for contact."""
     first_s = sequence * WINDOW_S
     first_time = start + timedelta(seconds=first_s)
@@ -144,16 +145,33 @@ def orbit_window(satellites, debris, start, sequence, *, show_timeline=True) -> 
         ),
         key=lambda event: event.tca, default=None,
     ) if debris_models else None
-    if contact is not None:
-        contact_s = (contact.tca - start).total_seconds()
+    staged = min(
+        (
+            item for item in simulated
+            if first_time <= item.contact_time <= first_time + timedelta(seconds=WINDOW_S)
+            and np.isfinite(propagate(satellites[item.satellite_index][1], [item.contact_time])[0]).all()
+        ),
+        key=lambda item: item.contact_time, default=None,
+    )
+    contact_time = contact.tca if contact is not None else None
+    impact_kind = "predicted"
+    primary_index = next((i for i, (_, model) in enumerate(satellites) if contact and model.satnum == contact.primary_id), None)
+    if staged is not None and (contact_time is None or staged.contact_time < contact_time):
+        contact_time = staged.contact_time
+        impact_kind = "simulated"
+        primary_index = staged.satellite_index
+    if contact_time is not None:
+        contact_s = (contact_time - start).total_seconds()
         offsets_s = [offset for offset in offsets_s if offset < contact_s] + [contact_s]
     times = [start + timedelta(seconds=offset) for offset in offsets_s]
     objects = [*satellites, *debris]
     paths = [propagate(model, times)[0] for _, model in objects]
-    primary_index = next((i for i, (_, model) in enumerate(satellites) if contact and model.satnum == contact.primary_id), None)
+    paths.extend(simulated_positions(item, satellites[item.satellite_index][1], times) for item in simulated)
     return {
-        "labels": [name for name, _ in objects],
+        "labels": [name for name, _ in objects] + [f"Simulated debris {i + 1}" for i in range(len(simulated))],
         "satelliteCount": len(satellites),
+        "simulatedCount": len(simulated),
+        "frameIntervalMs": 220 if simulated else 65,
         "earthRadiusKm": EARTH_RADIUS_KM,
         "live": True,
         "continuous": True,
@@ -166,8 +184,9 @@ def orbit_window(satellites, debris, start, sequence, *, show_timeline=True) -> 
                     path[index].round(3).tolist() if np.isfinite(path[index]).all() else None
                     for path in paths
                 ],
-                "impact": contact is not None and index == len(offsets_s) - 1,
+                "impact": contact_time is not None and index == len(offsets_s) - 1,
                 "impactObject": primary_index,
+                **({"impactKind": impact_kind} if contact_time is not None and index == len(offsets_s) - 1 else {}),
             }
             for index, offset in enumerate(offsets_s)
         ],

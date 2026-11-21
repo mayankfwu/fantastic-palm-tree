@@ -109,7 +109,7 @@ def test_live_mode_selects_named_satellites_and_samples_debris(monkeypatch):
     assert len(set(data["labels"][2:])) == 3
     assert all(" DEB " in name for name in data["labels"][2:])
     assert all(len(frame["positions"]) == 5 for frame in data["frames"])
-    app.sidebar.number_input[1].set_value(75.0).run()
+    next(widget for widget in app.sidebar.number_input if widget.label == "Screening radius (km)").set_value(75.0).run()
     assert app.session_state.rolling_orbit_window[1]["labels"] == data["labels"]
     app.sidebar.button[0].click().run()
     assert app.session_state.debris_seed != 41
@@ -163,3 +163,36 @@ def test_rolling_windows_join_and_stop_at_contact(monkeypatch):
     assert [frame["time"] for frame in contact["frames"]] == [0, 31.25]
     assert contact["frames"][-1]["impact"]
     assert contact["frames"][-1]["impactObject"] == 0
+
+
+def test_simulated_debris_can_stop_playback_at_a_staged_contact():
+    """Add up to fifteen synthetic paths in TEME km and meet at a staged UTC contact."""
+    from src.orbits.simulation import place_simulated_debris
+
+    scenario, primary, _ = load_demo_scenario()
+    start = datetime.fromisoformat(scenario["start"])
+    with pytest.raises(ValueError, match="up to 15"):
+        place_simulated_debris(16, 1, start, 13)
+    placements = place_simulated_debris(15, 1, start, 13)
+    assert placements == place_simulated_debris(15, 1, start, 13)
+    assert len({item.angle_rad for item in placements}) == 15
+    first = min(range(len(placements)), key=lambda i: placements[i].contact_time)
+    packet = orbit_window([("SCD 2", primary)], [], start, 0, simulated=placements)
+    impact = packet["frames"][-1]
+    assert packet["simulatedCount"] == 15
+    assert len(packet["labels"]) == 16
+    assert impact["impactKind"] == "simulated"
+    assert impact["time"] == (placements[first].contact_time - start).total_seconds()
+    assert impact["positions"][0] == impact["positions"][first + 1]
+    assert packet["frames"][0]["positions"][1] != packet["frames"][0]["positions"][2]
+
+
+def test_guided_replay_has_a_capped_simulated_debris_control():
+    """Select fifteen illustrative objects and preserve predicted encounter distances in km."""
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    control = next(widget for widget in app.sidebar.number_input if widget.label == "Add simulated debris")
+    assert control.max == 15
+    control.set_value(15).run()
+    assert not app.exception
+    assert app.session_state.rolling_orbit_window[1]["simulatedCount"] == 15
+    assert app.dataframe[0].value["Miss (km)"].iloc[0] == pytest.approx(0.662, abs=0.001)

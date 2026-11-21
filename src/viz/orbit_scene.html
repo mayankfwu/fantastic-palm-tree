@@ -43,7 +43,7 @@
 <script>
 const {
     frames, labels, earthRadiusKm, satelliteCount, live = false, continuous = false, sequence = 0,
-    showTimeline = true,
+    showTimeline = true, simulatedCount = 0, frameIntervalMs = 65,
 } = __ENCOUNTER_DATA__;
 const scene = document.getElementById("scene");
 const graph = document.getElementById("separation");
@@ -54,7 +54,7 @@ if (earthRadiusKm) {
 const slider = document.getElementById("timeline");
 slider.hidden = !showTimeline;
 const time = document.getElementById("time");
-const interval = 65;
+const interval = frameIntervalMs;
 const colors = ["#62daf4", "#ffbb70"];
 const satelliteColors = [colors[0], "#bda4ff", "#8ce3a9", "#f2d77b"];
 const debrisOrbits = document.getElementById("debris-orbits");
@@ -66,7 +66,11 @@ function sceneExtent() {
 let extent = sceneExtent();
 const gridStepKm = Math.max(1, Math.round(extent / 4));
 const maxDistance = earthRadiusKm ? 1 : Math.ceil(Math.max(...frames.map(frame => frame.distance)) / 5) * 5 || 1;
-const colorFor = object => object < satelliteCount ? satelliteColors[object % satelliteColors.length] : colors[1];
+const simulatedColor = "#f89bc2";
+function colorFor(object) {
+    if (object < satelliteCount) return satelliteColors[object % satelliteColors.length];
+    return object >= labels.length - simulatedCount ? simulatedColor : colors[1];
+}
 const trailSamples = 6;
 let index = 0;
 let yaw = -0.35;
@@ -175,11 +179,14 @@ function drawScene(frame) {
         ctx.arc(x, y, live && object >= satelliteCount ? 2.5 : 5, 0, 2 * Math.PI);
         ctx.fill();
     });
-    const legend = live
-        ? [...labels.slice(0, Math.min(satelliteCount, 4)), `${labels.length - satelliteCount} sampled debris`]
-        : labels;
-    legend.forEach((label, i) => {
-        ctx.fillStyle = live && i === legend.length - 1 ? colors[1] : colorFor(i);
+    const legend = labels.slice(0, live ? Math.min(satelliteCount, 4) : labels.length)
+        .map((label, i) => [label, colorFor(i)]);
+    if (live) {
+        legend.push([`${labels.length - satelliteCount - simulatedCount} catalog debris`, colors[1]]);
+        if (simulatedCount) legend.push([`${simulatedCount} simulated debris`, simulatedColor]);
+    }
+    legend.forEach(([label, color], i) => {
+        ctx.fillStyle = color;
         ctx.fillText(label, 12, 22 + 18 * i);
     });
     if (!earthRadiusKm) {
@@ -194,7 +201,8 @@ function drawScene(frame) {
         ctx.arc(x, y, 12, 0, 2 * Math.PI);
         ctx.stroke();
         ctx.fillStyle = "#ff8b8b";
-        ctx.fillText(continuous ? "Predicted contact" : "Simulated impact", 12, 100);
+        const label = continuous && frame.impactKind !== "simulated" ? "Predicted contact" : "Simulated impact";
+        ctx.fillText(label, 12, 28 + 18 * legend.length);
     }
 }
 

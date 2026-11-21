@@ -23,6 +23,8 @@ Turn off **Demo mode** in the sidebar. Search **Add satellites** by name or NORA
 
 ## Modeling assumptions
 
+Use **Add simulated debris** in the sidebar to add up to 15 illustrative objects to the 3D orbit. **Randomize simulated debris** changes their orbital paths and staged contact times. They appear in pink. These staged contacts affect playback only.
+
 - The demo uses public CelesTrak GP elements propagated with SGP4. Positions and velocities are in TEME, times are UTC, and miss distances are in km.
 - The demo window is 48 hours with a 5 km screening threshold. Refined times and miss distances are predictions for the saved elements.
 - Public GP elements provide no covariance. The planned risk model assumes 1 km isotropic position uncertainty and a 2D Gaussian encounter plane. The planned maneuver model uses one along-track impulse before closest approach and the rocket equation, with demo defaults of 500 kg and 220 s of specific impulse.

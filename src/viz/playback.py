@@ -15,12 +15,14 @@ def _scene_component():
 
 
 @st.fragment
-def render_continuous_orbit(satellites, debris, start, key, *, show_timeline=True):
+def render_continuous_orbit(satellites, debris, start, key, *, show_timeline=True, simulated=()):
     """Serve succeeding blocks in TEME km from a fixed UTC playback start."""
     state_key = "rolling_orbit_window"
     player_key = f"{key}-orbit-player"
     if st.session_state.get(state_key, (None,))[0] != key:
-        st.session_state[state_key] = key, orbit_window(satellites, debris, start, 0, show_timeline=show_timeline)
+        st.session_state[state_key] = key, orbit_window(
+            satellites, debris, start, 0, show_timeline=show_timeline, simulated=simulated,
+        )
     _, packet = st.session_state[state_key]
 
     def load_next():
@@ -29,7 +31,7 @@ def render_continuous_orbit(satellites, debris, start, key, *, show_timeline=Tru
         requested = st.session_state[player_key].get("advance")
         if active_key == key and requested == current["sequence"] + 1 and not current["frames"][-1]["impact"]:
             st.session_state[state_key] = key, orbit_window(
-                satellites, debris, start, requested, show_timeline=show_timeline,
+                satellites, debris, start, requested, show_timeline=show_timeline, simulated=simulated,
             )
 
     data = {
