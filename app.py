@@ -41,7 +41,7 @@ def main():
     st.set_page_config(page_title="ORBITGUARD · Satellite Conjunction Explorer", layout="wide")
     st.title("Satellite Conjunction Explorer")
     if st.sidebar.toggle("Demo mode", value=True, help="Turn off to select live CelesTrak objects."):
-        demo_view = st.sidebar.radio("Offline view", ["Guided replay", "Offline catalog"])
+        demo_view = st.sidebar.radio("Offline view", ["Offline catalog", "Guided replay"])
         if demo_view == "Offline catalog":
             render_catalog_scene(offline=True)
         else:

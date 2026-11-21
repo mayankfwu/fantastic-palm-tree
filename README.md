@@ -11,7 +11,7 @@ Install **Python 3.12**, download or clone this repository, and extract it if yo
 | Windows (PowerShell or Command Prompt) | `py -3.12 run_demo.py` |
 | macOS or Linux | `python3.12 run_demo.py` |
 
-The [launcher](run_demo.py) creates the project environment, installs any missing dependencies, and starts **Guided replay** with bundled data. Run it once with internet access before an offline review. Subsequent launches reuse the installed packages.
+The [launcher](run_demo.py) creates the project environment, installs any missing dependencies, and opens **Offline catalog** with bundled data. Run it once with internet access before an offline review. Subsequent launches reuse the installed packages.
 
 Open the local URL printed in the terminal if your browser does not open automatically. Leave the terminal running while you review, then press **Ctrl+C** to stop. To see a satellite avoid debris, follow the [three-step evaluator walkthrough](#quick-demo-for-evaluators).
 
@@ -54,8 +54,8 @@ The frozen scenario screens **SCD 2** (NORAD **25504**) against **581 COSMOS 225
 
 | Mode | How to start | Data |
 | --- | --- | --- |
+| **Offline catalog** | Opens by default with **Demo mode** on | SCD 2, ISS (ZARYA), CSS (TIANHE), and the bundled COSMOS 2251 debris snapshot |
 | **Guided replay** | Leave **Demo mode** on and choose **Guided replay** | The two frozen SCD 2 encounters |
-| **Offline catalog** | Leave **Demo mode** on and choose **Offline catalog** | SCD 2, ISS (ZARYA), CSS (TIANHE), and the bundled COSMOS 2251 debris snapshot |
 | **Live catalog** | Turn off **Demo mode** and choose a satellite catalog and debris group | CelesTrak GP data for space stations, Earth resources, or active satellites, with debris from COSMOS 2251, IRIDIUM 33, or FENGYUN 1C |
 
 In either catalog mode, search **Add satellites** by name or NORAD ID and select one or more satellites. Set **Number of debris objects** to sample the chosen group. The default is 10 when enough records are available. Click **Resample debris** to draw a new set. To look for predicted encounters, choose **Satellite to screen** and click **Screen next 24 hours**. This checks one primary against the sampled catalog debris. The **Screening radius (km)** controls which predicted passes appear in the results and defaults to 50 km in catalog mode.

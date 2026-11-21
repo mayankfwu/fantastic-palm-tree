@@ -6,7 +6,7 @@ Read [AGENTS.md](../AGENTS.md) for folder ownership and the shared interfaces. T
 
 ## Run the offline demo
 
-Reviewers can start Guided replay with `python3.12 run_demo.py` on macOS or Linux, or `py -3.12 run_demo.py` on Windows. Use the same command for offline launches after the first setup. [Reviewer quick start](../README.md#reviewer-quick-start)
+Reviewers can open the Offline catalog with `python3.12 run_demo.py` on macOS or Linux, or `py -3.12 run_demo.py` on Windows. Use the same command for offline launches after the first setup. [Reviewer quick start](../README.md#reviewer-quick-start)
 
 For manual setup and testing, run the following from the repository root using Python 3.12.
 
@@ -45,7 +45,7 @@ The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMO
 ## Owner C — Streamlit and visualization
 
 - Codex added the cross-platform reviewer launcher in `run_demo.py`. On Linux, a clean installation and a second launch with package downloads disabled both served the dashboard from a checkout with spaces in its path.
-- The Streamlit app shows the frozen SCD 2 scenario and a ranked encounter table. The selected encounter drives a slow-motion 3D animation in satellite-relative km, a zoomed-out orbit view with a solid Earth in TEME km, and a separation chart in seconds from closest approach.
+- New sessions open in **Offline catalog**. Select **Guided replay** in the sidebar to see the frozen SCD 2 scenario and ranked encounter table. The selected encounter drives a slow-motion 3D animation in satellite-relative km, a zoomed-out orbit view with a solid Earth in TEME km, and a separation chart in seconds from closest approach.
 - The 3D orbit view opens first. Both objects move in both views. The close-up draws a shaded Earth backdrop behind the encounter paths while the grid retains its local km scale. The illustrative impact option shifts the debris path to meet the satellite at closest approach and stops playback there. The ranked table always shows the orbital predictions.
 - The close-up updates the object positions and the separation graph marker together while the camera remains interactive.
 - The full orbit uses the same drag and arrow-key controls during playback. Earth is shaded and hides objects on its far side.

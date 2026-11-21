@@ -18,9 +18,15 @@ def _scene_data(html):
     return json.JSONDecoder().raw_decode(html.split("} = ", 1)[1])[0]
 
 
+def _open_guided_replay():
+    """Open the frozen UTC encounter replay through the offline view selector."""
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    return app.sidebar.radio[0].set_value("Guided replay").run()
+
+
 def test_offline_demo_switches_encounter_view_and_impact():
     """Verify the selected encounter, km separation, 3D close-up, and impact mode."""
-    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    app = _open_guided_replay()
     assert not app.exception
     assert app.radio[0].value == "3D orbit"
     assert app.metric[0].value == "581"
@@ -137,8 +143,8 @@ def test_live_mode_selects_named_satellites_and_samples_debris(monkeypatch):
     assert [call.args[0] for call in load.call_args_list] == ["stations", "cosmos-2251-debris"]
 
 
-def test_offline_catalog_supports_selection_with_network_disabled(monkeypatch):
-    """Use bundled named objects with a fixed UTC start and no catalog requests."""
+def test_offline_catalog_opens_by_default_with_network_disabled(monkeypatch):
+    """Start with bundled named objects at the fixed UTC epoch without catalog requests."""
     from unittest.mock import Mock
 
     from src.orbits import catalog
@@ -146,8 +152,9 @@ def test_offline_catalog_supports_selection_with_network_disabled(monkeypatch):
     network = Mock(side_effect=AssertionError("offline catalog must not request live data"))
     monkeypatch.setattr(catalog.requests, "get", network)
     app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
-    app.sidebar.radio[0].set_value("Offline catalog").run()
     assert not app.exception
+    assert app.sidebar.radio[0].value == "Offline catalog"
+    assert app.sidebar.multiselect[0].value == [25504]
     options = app.sidebar.multiselect[0].options
     assert any("ISS (ZARYA)" in label for label in options)
     assert any("CSS (TIANHE)" in label for label in options)
@@ -216,7 +223,7 @@ def test_simulated_debris_can_stop_playback_at_a_staged_contact():
 
 def test_guided_replay_has_a_capped_simulated_debris_control():
     """Select fifteen illustrative objects and preserve predicted encounter distances in km."""
-    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    app = _open_guided_replay()
     control = next(widget for widget in app.sidebar.number_input if widget.label == "Add simulated debris")
     assert control.max == 15
     control.set_value(15).run()
@@ -253,7 +260,7 @@ render_avoidance(None, encounter, start, 0.01)
 
 def test_applied_avoidance_replays_a_burn_and_recomputes_contact():
     """Replay both trajectories in TEME km and stop only at an unavoided contact."""
-    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    app = _open_guided_replay()
     next(widget for widget in app.toggle if widget.label == "Simulate an impact").set_value(True)
     next(widget for widget in app.toggle if widget.label == "Apply avoidance maneuver").set_value(True).run()
     assert not app.exception
@@ -318,7 +325,7 @@ def test_part_b_panel_updates_for_each_guided_encounter():
     probability = pytest.importorskip("src.risk.probability")
     fuel = pytest.importorskip("src.maneuver.fuel")
     pytest.importorskip("src.maneuver.planner")
-    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    app = _open_guided_replay()
     for index in (0, 1):
         app.selectbox[0].set_value(index).run()
         assert not app.exception
@@ -375,7 +382,7 @@ def test_part_b_panel_keeps_risk_visible_when_planner_rejects_input(monkeypatch)
         raise ValueError("Synthetic invalid planner input")
 
     monkeypatch.setattr(planner, "plan_maneuver", reject_plan)
-    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    app = _open_guided_replay()
     assert not app.exception
     assert any("Planner unavailable" in item.value and "Synthetic invalid" in item.value for item in app.warning)
     assert any(metric.label == "Estimated collision probability" for metric in app.metric)
@@ -385,7 +392,6 @@ def test_part_b_panel_keeps_risk_visible_when_planner_rejects_input(monkeypatch)
 def test_offline_catalog_avoids_staged_debris_by_default():
     """Apply a simulated UTC burn in offline playback and preserve the collision example."""
     app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
-    app.sidebar.radio[0].set_value("Offline catalog").run()
     default_counts = {widget.label: widget.value for widget in app.sidebar.number_input}
     assert default_counts["Number of debris objects"] == 10
     assert default_counts["Add simulated debris"] == 0
