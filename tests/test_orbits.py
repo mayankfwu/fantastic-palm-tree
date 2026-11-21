@@ -267,3 +267,46 @@ def test_socrates_same_input_epochs():
     assert result.tca.minute == 2
     assert result.miss_km == pytest.approx(0.625, abs=0.001)
     assert result.rel_speed_kms == pytest.approx(10.327, abs=0.001)
+
+
+def test_finite_burn_changes_velocity_gradually_and_rejoins_nominal():
+    """Check TEME displacement in km and velocity offset in km/s at a UTC rejoin."""
+    from src.orbits.demo import load_demo_scenario
+    from src.orbits.impulse import RECOVERY_DURATION_S, after_along_track_burn
+
+    _, satellite, _ = load_demo_scenario()
+    burn = EPOCH
+    recovery = burn + timedelta(minutes=15)
+    rejoin = recovery + timedelta(seconds=RECOVERY_DURATION_S)
+    times = [burn, burn + timedelta(seconds=0.1), burn + timedelta(seconds=60),
+             recovery, rejoin - timedelta(seconds=0.1), rejoin, rejoin + timedelta(seconds=0.1)]
+    sample = after_along_track_burn(satellite, burn, times[-1], 10.0, recovery_time=recovery)
+    offsets = sample(times) - propagate(satellite, times)[0]
+    np.testing.assert_array_equal(offsets[0], np.zeros(3))
+    assert np.linalg.norm(offsets[1]) / 0.1 < 1e-5
+    assert np.linalg.norm(offsets[2]) > 0.1
+    assert np.linalg.norm(offsets[3]) > 1
+    assert np.linalg.norm(offsets[5] - offsets[4]) / 0.1 < 1e-5
+    np.testing.assert_array_equal(offsets[5:], np.zeros((2, 3)))
+
+
+def test_staged_debris_has_independent_orbital_speed():
+    """Check distinct debris velocities in km/s at the UTC staged contacts."""
+    from src.orbits.demo import load_demo_scenario
+    from src.orbits.simulation import place_simulated_debris, simulated_positions
+
+    _, satellite, _ = load_demo_scenario()
+    placements = place_simulated_debris(3, 1, EPOCH, 13)
+    speed_factors = []
+    for item in placements:
+        contact = item.contact_time
+        delta = timedelta(milliseconds=100)
+        before, hit, after = simulated_positions(item, satellite, [contact - delta, contact, contact + delta])
+        position, velocity = propagate(satellite, [contact])
+        np.testing.assert_allclose(hit, position[0], atol=1e-8)
+        debris_velocity = (after - before) / 0.2
+        assert debris_velocity @ velocity[0] < 0
+        circular_speed = np.sqrt(satellite.mu / np.linalg.norm(position[0]))
+        speed_factors.append(np.linalg.norm(debris_velocity) / circular_speed)
+    np.testing.assert_allclose(speed_factors, [item.speed_factor for item in placements], atol=1e-7)
+    assert len(set(np.round(speed_factors, 6))) == len(placements)

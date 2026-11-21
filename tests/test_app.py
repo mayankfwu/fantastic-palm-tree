@@ -9,7 +9,8 @@ from streamlit.testing.v1 import AppTest
 
 from src.contracts import Conjunction
 from src.orbits.demo import load_demo_scenario
-from src.viz.encounter import close_up_html, orbit_html, orbit_window
+from src.viz.encounter import close_up_html, orbit_html
+from src.viz.rolling_scene import orbit_window
 
 
 def _scene_data(html):
@@ -70,6 +71,10 @@ def test_close_up_graph_tracks_the_3d_animation_through_impact():
     assert closest["distance"] == pytest.approx(encounter.miss_km, abs=0.001)
     assert 'id="separation"' in html
     assert 'id="timeline"' in html
+    assert 'id="camera-mode"' in html
+    assert 'id="speed" type="range" min="0.01" max="2"' in html
+    assert 'id="slow-near" type="checkbox"' in html
+    assert data["encounterTimes"] == [0.0]
 
     html = close_up_html(primary, secondary, encounter, "SCD 2", simulate_impact=True)
     frames = _scene_data(html)["frames"]
@@ -82,12 +87,12 @@ def test_close_up_graph_tracks_the_3d_animation_through_impact():
 
 
 def test_live_mode_selects_named_satellites_and_samples_debris(monkeypatch):
-    """Verify a live selection and a stable random debris count without network access."""
+    """Verify live selection, stable sampling, and staged avoidance without the network."""
     from unittest.mock import Mock
 
     from src.orbits import catalog
 
-    _, primary, debris = load_demo_scenario()
+    scenario, primary, debris = load_demo_scenario()
     load = Mock(side_effect=lambda group: (
         [("SCD 2", primary), ("Other satellite", debris[0])] if group == "stations" else
         [("COSMOS 2251", primary), *((f"COSMOS 2251 DEB {i}", model) for i, model in enumerate(debris[1:8]))]
@@ -114,6 +119,18 @@ def test_live_mode_selects_named_satellites_and_samples_debris(monkeypatch):
     app.sidebar.button[0].click().run()
     assert app.session_state.debris_seed != 41
     assert len(app.session_state.rolling_orbit_window[1]["labels"]) == 5
+    app.session_state.live_start = datetime.fromisoformat(scenario["start"])
+    app.session_state.simulated_seed = 13
+    app.sidebar.multiselect[0].set_value([primary.satnum]).run()
+    next(widget for widget in app.sidebar.number_input if widget.label == "Number of debris objects").set_value(0).run()
+    next(widget for widget in app.sidebar.number_input if widget.label == "Add simulated debris").set_value(3).run()
+    assert not app.exception
+    avoided = app.session_state.rolling_orbit_window[1]
+    assert not avoided["showTimeline"]
+    assert avoided["maneuverPhases"]
+    assert not any(frame["impact"] for frame in avoided["frames"])
+    next(widget for widget in app.sidebar.toggle if widget.label == "Avoid simulated debris").set_value(False).run()
+    assert app.session_state.rolling_orbit_window[1]["frames"][-1]["impactKind"] == "simulated"
     assert [call.args[0] for call in load.call_args_list] == ["stations", "cosmos-2251-debris"]
 
 
@@ -155,14 +172,21 @@ def test_rolling_windows_join_and_stop_at_contact(monkeypatch):
     assert first["frames"][-1] == second["frames"][0]
     assert not first["frames"][-1]["impact"]
 
-    from src.viz import encounter
+    from src.viz import rolling_scene
 
     event = Conjunction(primary.satnum, debris[0].satnum, start + timedelta(seconds=31.25), 0.005, 10.0)
-    monkeypatch.setattr(encounter, "find_conjunctions", lambda *args, **kwargs: [event])
+    monkeypatch.setattr(rolling_scene, "find_conjunctions", lambda *args, **kwargs: [event])
     contact = orbit_window(satellites, objects, start, 0)
-    assert [frame["time"] for frame in contact["frames"]] == [0, 31.25]
+    assert contact["frames"][0]["time"] == 0
+    assert contact["frames"][-1]["time"] == 31.25
+    assert contact["encounterTimes"] == [31.25]
     assert contact["frames"][-1]["impact"]
     assert contact["frames"][-1]["impactObject"] == 0
+
+    event.miss_km = 3.0
+    near_pass = orbit_window(satellites, objects, start, 0)
+    assert near_pass["encounterTimes"] == [31.25]
+    assert not any(frame["impact"] for frame in near_pass["frames"])
 
 
 def test_simulated_debris_can_stop_playback_at_a_staged_contact():
@@ -196,3 +220,168 @@ def test_guided_replay_has_a_capped_simulated_debris_control():
     assert not app.exception
     assert app.session_state.rolling_orbit_window[1]["simulatedCount"] == 15
     assert app.dataframe[0].value["Miss (km)"].iloc[0] == pytest.approx(0.662, abs=0.001)
+
+
+def test_avoidance_panel_uses_the_frozen_scenario_clock():
+    """Run Owner B's models for an archived UTC encounter with an hour of lead time."""
+    pytest.importorskip("src.maneuver.planner")
+    pytest.importorskip("src.risk.probability")
+    app = AppTest.from_string(
+        """
+from datetime import UTC, datetime, timedelta
+from src.contracts import Conjunction
+from src.viz.avoidance import render_avoidance
+
+start = datetime(2000, 1, 1, tzinfo=UTC)
+encounter = Conjunction(25544, 34387, start + timedelta(hours=1), 2.0, 10.0)
+render_avoidance(None, encounter, start, 0.01)
+"""
+    ).run()
+    assert not app.exception
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert float(metrics["Estimated collision probability"].rstrip("%")) > 0
+    assert float(metrics["Burn now Δv"].split()[0]) == pytest.approx(1.273, abs=0.001)
+    assert metrics["Estimated post-burn miss"] == "5.000 km"
+    assert metrics["Recommended burn time (UTC)"] == "2000-01-01 00:00:00"
+    comparison = json.loads(app.get("plotly_chart")[0].proto.spec)
+    fuel_now, fuel_later = comparison["data"][0]["y"]
+    assert 0 < fuel_now < fuel_later
+
+
+def test_applied_avoidance_replays_a_burn_and_recomputes_contact():
+    """Replay both trajectories in TEME km and stop only at an unavoided contact."""
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    next(widget for widget in app.toggle if widget.label == "Simulate an impact").set_value(True)
+    next(widget for widget in app.toggle if widget.label == "Apply avoidance maneuver").set_value(True).run()
+    assert not app.exception
+    scene = _scene_data(app.get("iframe")[0].proto.srcdoc)
+    burn_sample = next(i for i, frame in enumerate(scene["frames"]) if frame["time"] == -1200)
+    assert scene["frames"][burn_sample]["positions"][0] == scene["nominalPath"][burn_sample]
+    assert scene["frames"][0]["positions"][0] == scene["nominalPath"][0]
+    closest = next(i for i, frame in enumerate(scene["frames"]) if frame["time"] == 0)
+    assert scene["frames"][closest]["positions"][0] != scene["nominalPath"][closest]
+    assert scene["frames"][-1]["positions"][0] == scene["nominalPath"][-1]
+    assert scene["maneuverPhases"]["0"] == [-1200, -1140, 300, 2100]
+    assert not any(frame["impact"] for frame in scene["frames"])
+    assert scene["avoidedPasses"][0]["missKm"] > 5
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Original miss"] == "0.000 km"
+    assert float(metrics["Recomputed miss after burn"].split()[0]) > 5
+
+    next(widget for widget in app.number_input if widget.label == "Along-track Δv (m/s)").set_value(0.0).run()
+    assert not app.exception
+    scene = _scene_data(app.get("iframe")[0].proto.srcdoc)
+    assert scene["frames"][-1]["impact"]
+    assert scene["frames"][-1]["distance"] == pytest.approx(0)
+
+
+def test_part_b_panel_updates_for_each_guided_encounter():
+    """Update the selected miss in km, probability in percent, and fuel in kg."""
+    probability = pytest.importorskip("src.risk.probability")
+    fuel = pytest.importorskip("src.maneuver.fuel")
+    pytest.importorskip("src.maneuver.planner")
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    for index in (0, 1):
+        app.selectbox[0].set_value(index).run()
+        assert not app.exception
+        assert any(item.value == "Risk Assessment & Avoidance Planning" for item in app.subheader)
+        assert any("Avoidance maneuver recommended" in item.value for item in app.markdown)
+        metrics = {metric.label: metric.value for metric in app.metric}
+        miss_km = app.dataframe[0].value["Miss (km)"].iloc[index]
+        assert metrics["Current miss distance"] == f"{miss_km:.3f} km"
+        expected_percent = probability.collision_probability(miss_km, 1.0, 0.01) * 100
+        assert metrics["Estimated collision probability"] == f"{expected_percent:.3g}%"
+        dv_mps = float(metrics["Burn now Δv"].split()[0])
+        propellant = float(metrics["Estimated propellant consumption"].split()[0])
+        assert propellant == pytest.approx(fuel.fuel_used(dv_mps, 500, 220), rel=0.002)
+
+    mass = next(widget for widget in app.sidebar.number_input if widget.label == "Spacecraft mass (kg)")
+    mass.set_value(1000.0).run()
+    adjusted = next(metric for metric in app.metric if metric.label == "Estimated propellant consumption")
+    assert float(adjusted.value.split()[0]) == pytest.approx(propellant * 2, rel=0.002)
+
+
+def test_part_b_panel_shows_no_burn_for_safe_encounter(monkeypatch):
+    """A safe miss in km shows 0 kg without invoking the fuel model."""
+    fuel = pytest.importorskip("src.maneuver.fuel")
+    pytest.importorskip("src.maneuver.planner")
+
+    def unexpected_fuel_call(*args):
+        """Reject a fuel calculation in kg when the planner returns zero Δv."""
+        pytest.fail("Fuel model must not be called for a zero-Δv maneuver")
+
+    monkeypatch.setattr(fuel, "fuel_used", unexpected_fuel_call)
+    app = AppTest.from_string(
+        """
+from datetime import UTC, datetime, timedelta
+from src.contracts import Conjunction
+from src.viz.avoidance import render_avoidance
+start = datetime(2000, 1, 1, tzinfo=UTC)
+render_avoidance(None, Conjunction(25544, 34387, start + timedelta(hours=1), 5.0, 10.0), start, 0.01)
+"""
+    ).run()
+    assert not app.exception
+    assert any("No maneuver required" in item.value for item in app.markdown)
+    metrics = {metric.label: metric.value for metric in app.metric}
+    assert metrics["Recommended burn time (UTC)"] == "—"
+    assert metrics["Estimated propellant consumption"] == "0 kg"
+
+
+def test_part_b_panel_keeps_risk_visible_when_planner_rejects_input(monkeypatch):
+    """Report a planner ValueError and retain the probability in percent."""
+    planner = pytest.importorskip("src.maneuver.planner")
+    pytest.importorskip("src.risk.probability")
+
+    def reject_plan(*args, **kwargs):
+        """Simulate an invalid UTC maneuver input from the existing planner."""
+        raise ValueError("Synthetic invalid planner input")
+
+    monkeypatch.setattr(planner, "plan_maneuver", reject_plan)
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    assert not app.exception
+    assert any("Planner unavailable" in item.value and "Synthetic invalid" in item.value for item in app.warning)
+    assert any(metric.label == "Estimated collision probability" for metric in app.metric)
+    assert all(metric.label != "Estimated propellant consumption" for metric in app.metric)
+
+
+def test_offline_catalog_avoids_staged_debris_by_default():
+    """Apply a simulated UTC burn in offline playback and preserve the collision example."""
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    app.sidebar.radio[0].set_value("Offline catalog").run()
+    default_counts = {widget.label: widget.value for widget in app.sidebar.number_input}
+    assert default_counts["Number of debris objects"] == 10
+    assert default_counts["Add simulated debris"] == 0
+    app.session_state.simulated_seed = 13
+    next(widget for widget in app.sidebar.number_input if widget.label == "Number of debris objects").set_value(0).run()
+    next(widget for widget in app.sidebar.number_input if widget.label == "Add simulated debris").set_value(3).run()
+    assert not app.exception
+    _, avoided = app.session_state.rolling_orbit_window
+    assert avoided["burnOffsetS"] is not None
+    assert avoided["frames"][-1]["time"] == 6000
+    assert not any(frame["impact"] for frame in avoided["frames"])
+    assert len(avoided["avoidedPasses"]) == 3
+    assert all(
+        event["time"] in avoided["encounterTimes"] and event["missKm"] > 0.01
+        for event in avoided["avoidedPasses"]
+    )
+    assert any(
+        following["time"] - current["time"] == 1
+        for current, following in zip(avoided["frames"], avoided["frames"][1:])
+    )
+    assert any(
+        frame["positions"][0] != frame["nominalPositions"][0]
+        for frame in avoided["frames"]
+    )
+    assert avoided["frames"][-1]["positions"][0] == avoided["frames"][-1]["nominalPositions"][0]
+
+    switch = next(widget for widget in app.sidebar.toggle if widget.label == "Avoid simulated debris")
+    switch.set_value(False).run()
+    assert not app.exception
+    _, original = app.session_state.rolling_orbit_window
+    assert original["frames"][-1]["impactKind"] == "simulated"
+    assert avoided["frames"][0]["positions"][0] == original["frames"][0]["positions"][0]
+    avoided_positions = {frame["time"]: frame["positions"][0] for frame in avoided["frames"]}
+    assert any(
+        frame["time"] in avoided_positions and avoided_positions[frame["time"]] != frame["positions"][0]
+        for frame in original["frames"]
+    )

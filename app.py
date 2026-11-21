@@ -13,8 +13,9 @@ from src.orbits import find_conjunctions
 from src.orbits.catalog import CACHE_SECONDS, load_named_catalog
 from src.orbits.demo import load_demo_scenario, load_offline_catalogs
 from src.orbits.simulation import MAX_SIMULATED_DEBRIS, place_simulated_debris
-from src.viz.encounter import close_up_html, orbit_html, separation_figure
-from src.viz.playback import render_continuous_orbit
+from src.viz.avoidance import render_avoidance, render_burn_replay
+from src.viz.encounter import CONTACT_KM, close_up_html, orbit_html, separation_figure
+from src.viz.rolling_scene import render_continuous_orbit
 
 SATELLITE_GROUPS = {"Space stations": "stations", "Earth resources": "resource", "Active satellites": "active"}
 DEBRIS_GROUPS = {
@@ -36,7 +37,7 @@ def screen_snapshot():
 
 def main():
     """Choose between frozen and live views with UTC times and TEME km."""
-    st.set_page_config(page_title="Satellite Conjunction Explorer", layout="wide")
+    st.set_page_config(page_title="ORBITGUARD · Satellite Conjunction Explorer", layout="wide")
     st.title("Satellite Conjunction Explorer")
     if st.sidebar.toggle("Demo mode", value=True, help="Turn off to select live CelesTrak objects."):
         demo_view = st.sidebar.radio("Offline view", ["Guided replay", "Offline catalog"])
@@ -117,7 +118,7 @@ def render_catalog_scene(*, offline: bool):
         if catalog_id not in selected and "DEB" in entry[0].upper().split()
     ]
     count = st.sidebar.number_input(
-        "Number of debris objects", min_value=0, max_value=len(eligible), value=min(20, len(eligible)),
+        "Number of debris objects", min_value=0, max_value=len(eligible), value=min(10, len(eligible)),
     )
     resample = st.sidebar.button("Resample debris", disabled=count == 0)
     if "debris_seed" not in st.session_state or resample:
@@ -125,18 +126,28 @@ def render_catalog_scene(*, offline: bool):
     debris = Random(st.session_state.debris_seed).sample(eligible, count)
     satellites = [available[catalog_id] for catalog_id in selected]
     simulated = simulated_debris_controls(satellites, start)
+    avoid_simulated = bool(simulated) and st.sidebar.toggle(
+        "Avoid simulated debris", value=True,
+        key="offline_avoid_simulated" if offline else "live_avoid_simulated",
+        help="Apply an illustrative velocity change before a staged contact.",
+    )
     source = "Bundled CelesTrak snapshot · COSMOS 2251" if offline else "Live CelesTrak elements"
     st.caption(
         f"{source} · {len(satellites)} satellites · {count} of {len(eligible)} debris sampled "
         f"· Playback starts {start:%Y-%m-%d %H:%M} UTC"
     )
-    scene_key = sha256(repr((offline, start, simulated, [
+    scene_key = sha256(repr((offline, start, simulated, avoid_simulated, [
         (model.satnum, sat_epoch_datetime(model)) for _, model in [*satellites, *debris]
     ])).encode()).hexdigest()
-    render_continuous_orbit(
-        satellites, debris, start, f"catalog-{scene_key}", show_timeline=offline, simulated=simulated,
-    )
-    if simulated:
+    scene_key = f"catalog-scene-{scene_key}"
+    st.session_state.avoid_simulated_scene = scene_key if avoid_simulated else None
+    render_continuous_orbit(satellites, debris, start, scene_key, show_timeline=offline, simulated=simulated)
+    if avoid_simulated:
+        st.caption(
+            f"{len(simulated)} simulated debris added. A finite +10 m/s burn changes each affected satellite’s "
+            "trajectory. After its staged encounters, a gradual recovery brings it back to its original orbit."
+        )
+    elif simulated:
         st.caption(f"{len(simulated)} simulated debris added. Playback stops at the first staged or predicted contact.")
     else:
         st.caption("Playback continues until a predicted contact within the assumed 10 m radius. Drag to rotate.")
@@ -157,7 +168,20 @@ def render_catalog_scene(*, offline: bool):
             encounters = find_conjunctions(primary, objects, start, 24, screen_km=screen_km)
         st.session_state.catalog_screen = screen_key, encounters
     if st.session_state.get("catalog_screen", (None,))[0] == screen_key:
-        render_encounter_table(st.session_state.catalog_screen[1])
+        encounters = st.session_state.catalog_screen[1]
+        render_encounter_table(encounters)
+        if encounters:
+            index = st.selectbox(
+                "Encounter to inspect", range(len(encounters)),
+                format_func=lambda item: f"NORAD {encounters[item].secondary_id} · "
+                f"{encounters[item].miss_km:.3f} km · {encounters[item].tca:%b %d %H:%M:%S} UTC",
+            )
+            encounter = encounters[index]
+            if st.toggle("Apply avoidance maneuver"):
+                render_burn_replay(
+                    primary, catalog[encounter.secondary_id][1], encounter, available[primary_id][0], earliest_burn=start,
+                )
+            render_avoidance(primary, encounter, start, CONTACT_KM)
 
 
 def render_encounter_table(encounters):
@@ -228,9 +252,15 @@ def render_demo():
         st.warning("This encounter uses elements more than 3 days old at closest approach.")
     simulate_impact = st.toggle("Simulate an impact")
     if simulate_impact:
-        st.info("Illustrative impact. The debris path is shifted to meet the satellite at closest approach.")
+        st.info("Illustrative impact. The debris path intersects the original satellite orbit.")
+    apply_burn = st.toggle("Apply avoidance maneuver")
     view = st.radio("Encounter view", ["3D orbit", "3D close-up"], horizontal=True)
-    if view == "3D close-up":
+    if apply_burn:
+        render_burn_replay(
+            primary, secondary, encounter, satellite_name,
+            earliest_burn=start, simulate_impact=simulate_impact, close_up=view == "3D close-up",
+        )
+    elif view == "3D close-up":
         html = close_up_html(
             primary, secondary, encounter, satellite_name, simulate_impact=simulate_impact,
         )
@@ -248,7 +278,7 @@ def render_demo():
                 satellites = [(satellite_name, primary)]
                 orbit_start = encounter.tca - timedelta(minutes=50)
                 simulated = simulated_debris_controls(satellites, orbit_start)
-                scene_key = f"demo-{selected}-{len(simulated)}-{st.session_state.simulated_seed}"
+                scene_key = f"demo-scene-{selected}-{len(simulated)}-{st.session_state.simulated_seed}"
                 render_continuous_orbit(
                     satellites, [(f"Debris {secondary.satnum}", secondary)], orbit_start,
                     scene_key, simulated=simulated,
@@ -264,12 +294,13 @@ def render_demo():
                 ),
                 width="stretch",
             )
-    if simulate_impact:
-        st.caption("Simulated impact at 0.000 km. Playback ends at contact.")
-    else:
+    if simulate_impact and not apply_burn:
+        st.caption("Simulated impact at 0.000 km. Playback pauses on the contact snapshot.")
+    elif not apply_burn:
         st.caption(f"Predicted miss: {encounter.miss_km:.3f} km.")
 
     st.caption("Public GP orbital elements provide no covariance. This view shows predicted encounter geometry.")
+    render_avoidance(primary, encounter, start, CONTACT_KM)
 
 
 if __name__ == "__main__":

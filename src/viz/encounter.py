@@ -8,13 +8,12 @@ import numpy as np
 import plotly.graph_objects as go
 
 from src.contracts import Conjunction
-from src.orbits import find_conjunctions, propagate
-from src.orbits.simulation import simulated_positions
+from src.orbits import propagate
+from src.orbits.impulse import BURN_DURATION_S, RECOVERY_DURATION_S, preview_along_track_encounter
 
 PRIMARY_COLOR = "#62daf4"
 DEBRIS_COLOR = "#ffbb70"
 EARTH_RADIUS_KM = 6378.137
-WINDOW_S = 6000
 CONTACT_KM = 0.01
 
 
@@ -67,7 +66,7 @@ def separation_figure(primary, secondary, encounter: Conjunction, screen_km: flo
 
 def orbit_html(primary, secondary, encounter: Conjunction, primary_name: str, *, simulate_impact=False) -> str:
     """Render the full Earth-centered orbits in TEME km around UTC TCA."""
-    offsets_s = np.arange(-3000, 3001, 60)
+    offsets_s = np.union1d(np.arange(-3000, 3001, 60), np.arange(-12, 13))
     primary_path, debris_path = _sample_positions(primary, secondary, encounter, offsets_s, simulate_impact)
     return _scene_html(
         offsets_s, primary_path, debris_path, primary_name, encounter.secondary_id,
@@ -102,8 +101,61 @@ def close_up_html(
     )
 
 
+def avoidance_preview(
+    primary, debris, encounter, primary_name, dv_mps, *, earliest_burn=None, simulate_impact=False, close_up=False,
+):
+    """Replay a signed m/s impulse and compare closest approaches in TEME km and UTC."""
+    paths, search, original, changed, new_offset, new_miss, burn_time, recovery_time = preview_along_track_encounter(
+        primary, debris, encounter.tca, dv_mps, earliest_burn=earliest_burn, simulate_impact=simulate_impact,
+    )
+
+    if close_up:
+        offsets = np.linspace(new_offset - 2, new_offset + 2, 81)
+    else:
+        offsets = np.arange(-3000, 3001, 60)
+    contact = new_offset if new_miss <= CONTACT_KM else None
+    offsets = np.unique(np.append(offsets, new_offset))
+    burn_offset_s = (burn_time - encounter.tca).total_seconds()
+    recovery_offset_s = (recovery_time - encounter.tca).total_seconds()
+    if not close_up:
+        offsets = np.unique(np.concatenate((
+            offsets, burn_offset_s + np.arange(0, BURN_DURATION_S + 1, 10),
+            [recovery_offset_s, recovery_offset_s + RECOVERY_DURATION_S],
+            new_offset + np.arange(-12, 13),
+        )))
+    if contact is not None:
+        offsets = offsets[offsets <= contact]
+    nominal, altered, debris_path = paths(offsets)
+    if close_up:
+        origin = (altered[len(offsets) // 2] + debris_path[len(offsets) // 2]) / 2
+        nominal, altered, debris_path = nominal - origin, altered - origin, debris_path - origin
+    html = _scene_html(
+        offsets, altered, debris_path, primary_name, encounter.secondary_id, False,
+        earth_radius_km=0 if close_up else EARTH_RADIUS_KM,
+        nominal_path=nominal, burn_offset_s=burn_offset_s, contact_offset_s=contact,
+        encounter_offset_s=new_offset,
+        avoided_passes=(
+            [{"time": new_offset, "primary": 0, "debris": 1, "missKm": new_miss}]
+            if simulate_impact and contact is None and not close_up else ()
+        ),
+        maneuver_phases=[burn_offset_s, burn_offset_s + BURN_DURATION_S,
+                         recovery_offset_s, recovery_offset_s + RECOVERY_DURATION_S],
+    )
+    graph = go.Figure()
+    graph.add_scatter(x=search.tolist(), y=original.tolist(), name="Original", line=dict(dash="dot"))
+    graph.add_scatter(x=search.tolist(), y=changed.tolist(), name="After burn")
+    graph.add_scatter(x=[new_offset], y=[new_miss], name="New closest approach", mode="markers")
+    graph.update_layout(
+        template="plotly_dark", height=420, margin=dict(l=48, r=20, b=58, t=25),
+        xaxis_title="Seconds from original closest approach", yaxis_title="Separation (km)",
+    )
+    return html, graph, float(new_miss), burn_time, encounter.tca + timedelta(seconds=float(new_offset))
+
+
 def _scene_html(
     offsets_s, primary_path, debris_path, primary_name, debris_id, simulate_impact, *, earth_radius_km=0,
+    nominal_path=None, burn_offset_s=None, contact_offset_s=None,
+    maneuver_phases=None, encounter_offset_s=0.0, avoided_passes=(),
 ):
     """Embed synchronized trajectories in km and playback times in seconds."""
     if simulate_impact:
@@ -116,12 +168,18 @@ def _scene_html(
         "labels": [primary_name, f"Debris {debris_id}"],
         "satelliteCount": 1,
         "earthRadiusKm": earth_radius_km,
+        "clockStepS": 60 if earth_radius_km else 0.05,
+        "encounterTimes": [encounter_offset_s],
+        "avoidedPasses": avoided_passes,
+        "nominalPath": nominal_path.tolist() if nominal_path is not None else [],
+        "burnOffsetS": burn_offset_s,
+        "maneuverPhases": {0: maneuver_phases} if maneuver_phases is not None else {},
         "frames": [
             {
                 "time": float(offset),
                 "positions": [primary_position.tolist(), debris_position.tolist()],
                 "distance": float(distance),
-                "impact": simulate_impact and float(offset) == 0,
+                "impact": (simulate_impact and float(offset) == 0) or float(offset) == contact_offset_s,
             }
             for offset, primary_position, debris_position, distance in zip(
                 offsets_s, primary_path, debris_path, distances, strict=True,
@@ -129,68 +187,6 @@ def _scene_html(
         ],
     }
     return _embed_scene(data)
-
-
-def orbit_window(satellites, debris, start, sequence, *, show_timeline=True, simulated=()) -> dict:
-    """Build a 100-minute block of TEME km positions and check for contact."""
-    first_s = sequence * WINDOW_S
-    first_time = start + timedelta(seconds=first_s)
-    offsets_s = list(range(first_s, first_s + WINDOW_S + 1, 60))
-    debris_models = [model for _, model in debris]
-    contact = min(
-        (
-            event
-            for _, primary in satellites
-            for event in find_conjunctions(primary, debris_models, first_time, WINDOW_S / 3600, screen_km=CONTACT_KM)
-        ),
-        key=lambda event: event.tca, default=None,
-    ) if debris_models else None
-    staged = min(
-        (
-            item for item in simulated
-            if first_time <= item.contact_time <= first_time + timedelta(seconds=WINDOW_S)
-            and np.isfinite(propagate(satellites[item.satellite_index][1], [item.contact_time])[0]).all()
-        ),
-        key=lambda item: item.contact_time, default=None,
-    )
-    contact_time = contact.tca if contact is not None else None
-    impact_kind = "predicted"
-    primary_index = next((i for i, (_, model) in enumerate(satellites) if contact and model.satnum == contact.primary_id), None)
-    if staged is not None and (contact_time is None or staged.contact_time < contact_time):
-        contact_time = staged.contact_time
-        impact_kind = "simulated"
-        primary_index = staged.satellite_index
-    if contact_time is not None:
-        contact_s = (contact_time - start).total_seconds()
-        offsets_s = [offset for offset in offsets_s if offset < contact_s] + [contact_s]
-    times = [start + timedelta(seconds=offset) for offset in offsets_s]
-    objects = [*satellites, *debris]
-    paths = [propagate(model, times)[0] for _, model in objects]
-    paths.extend(simulated_positions(item, satellites[item.satellite_index][1], times) for item in simulated)
-    return {
-        "labels": [name for name, _ in objects] + [f"Simulated debris {i + 1}" for i in range(len(simulated))],
-        "satelliteCount": len(satellites),
-        "simulatedCount": len(simulated),
-        "frameIntervalMs": 220 if simulated else 65,
-        "earthRadiusKm": EARTH_RADIUS_KM,
-        "live": True,
-        "continuous": True,
-        "showTimeline": show_timeline,
-        "sequence": sequence,
-        "frames": [
-            {
-                "time": offset,
-                "positions": [
-                    path[index].round(3).tolist() if np.isfinite(path[index]).all() else None
-                    for path in paths
-                ],
-                "impact": contact_time is not None and index == len(offsets_s) - 1,
-                "impactObject": primary_index,
-                **({"impactKind": impact_kind} if contact_time is not None and index == len(offsets_s) - 1 else {}),
-            }
-            for index, offset in enumerate(offsets_s)
-        ],
-    }
 
 
 def _embed_scene(data: dict) -> str:

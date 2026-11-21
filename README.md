@@ -1,4 +1,4 @@
-# Satellite Conjunction Explorer
+# ORBITGUARD · Satellite Conjunction Explorer
 
 A hackathon simulator for satellite–debris close approaches. The offline Streamlit demo screens SCD 2 against a frozen set of 581 COSMOS 2251 debris objects. The **3D orbit** starts automatically and advances through successive propagation windows. Drag to rotate during playback. The **3D close-up** replays the selected encounter with a separation graph. Turn on **Simulate an impact** to see an illustrative contact that stops playback.
 
@@ -23,8 +23,12 @@ Turn off **Demo mode** in the sidebar. Search **Add satellites** by name or NORA
 
 ## Modeling assumptions
 
-Use **Add simulated debris** in the sidebar to add up to 15 illustrative objects to the 3D orbit. **Randomize simulated debris** changes their orbital paths and staged contact times. They appear in pink. These staged contacts affect playback only.
+To preview avoidance, select an encounter and turn on **Apply avoidance maneuver**. The default +10 m/s along-track change is applied gradually over 60 seconds. A negative Δv slows the satellite. After passing the debris, a 30-minute guided recovery brings the satellite back to the nominal SGP4 position and velocity. The gray dashed line shows the original path. The app recomputes the miss within two minutes of the original closest approach. This illustrative recovery uses idealized guidance, and the Part B fuel estimate covers its separate linear maneuver recommendation.
+
+Use **Add simulated debris** in the sidebar to add up to 15 pink objects to the 3D orbit. **Avoid simulated debris** is on by default in **Offline catalog** and **Live mode**. The replay applies a +10 m/s along-track burn before the first staged encounter for each affected satellite and rechecks separation near the original contact times. Turn avoidance off to show the staged impact. These settings affect playback only.
 
 - The demo uses public CelesTrak GP elements propagated with SGP4. Positions and velocities are in TEME, times are UTC, and miss distances are in km.
 - The demo window is 48 hours with a 5 km screening threshold. Refined times and miss distances are predictions for the saved elements.
-- Public GP elements provide no covariance. The planned risk model assumes 1 km isotropic position uncertainty and a 2D Gaussian encounter plane. The planned maneuver model uses one along-track impulse before closest approach and the rocket equation, with demo defaults of 500 kg and 220 s of specific impulse.
+- **Risk Assessment & Avoidance Planning** uses Part B once `b-risk-maneuver` is merged. Collision probability uses a 2D Gaussian encounter-plane model with assumed isotropic uncertainty of **1 km** and an assumed combined collision radius of **0.01 km**. Public GP elements provide no covariance. Demo risk bands are **Low** below 0.001%, **Elevated** from 0.001% to below 0.01%, and **High** at or above 0.01%.
+- The Part B planner estimates one along-track burn with a **5 km** target miss. It accepts the primary and conjunction and gives a linear miss estimate for demonstration only. The separate **Apply avoidance maneuver** replay propagates a user-selected illustrative burn. Archived events use the scenario start as their planning clock.
+- Fuel estimation uses the rocket equation with adjustable defaults of **500 kg** spacecraft mass and **220 s** specific impulse. When no maneuver is required, the dashboard shows **0 kg**.

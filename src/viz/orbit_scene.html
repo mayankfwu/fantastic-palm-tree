@@ -14,11 +14,30 @@
   #timeline[hidden] + output { margin-left: auto; }
   #debris-controls { padding: 0 12px 4px; }
   #debris-controls small { color: #bacadb; margin-left: 8px; }
+  #follow-controls { padding: 0 12px 6px; }
+  #follow-controls select { color: #f4f8fc; background: #252d39; border: 1px solid #627084; border-radius: 5px; padding: 3px 6px; max-width: 68%; }
+  #follow-controls label { white-space: nowrap; }
+  #speed { width: 84px; vertical-align: middle; }
+  #speed-value { display: inline-block; min-width: 31px; text-align: left; }
   output { min-width: 66px; text-align: right; font-variant-numeric: tabular-nums; }
   main { display: grid; grid-template-columns: 11fr 9fr; min-height: 0; }
-  canvas { width: 100%; height: 410px; display: block; }
+  canvas { width: 100%; height: 380px; display: block; }
   main.orbit-only { grid-template-columns: 1fr; }
   canvas[hidden] { display: none; }
+  #scene-panel { position: relative; min-width: 0; }
+  #tracking-panel { position: absolute; bottom: 8px; left: 8px; width: min(208px, 52%); padding: 8px; border: 1px solid #52667f; border-radius: 6px; background: #15191fee; pointer-events: none; font-size: 12px; }
+  #tracking-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tracking-velocity { display: block; text-align: left; color: #d1e2f1; }
+  #tracking-components { display: block; color: #a1b1c2; font-size: 10px; font-variant-numeric: tabular-nums; }
+  #tracking-path { display: block; height: 44px; }
+  #avoidance-windows { position: absolute; top: 8px; right: 8px; width: min(300px, 48%); pointer-events: none; }
+  #avoidance-windows aside { padding: 8px; border: 1px solid #52667f; border-radius: 6px; background: #15191fee; font-size: 12px; }
+  #avoidance-scene { height: 115px; }
+  #avoidance-distance { display: block; color: #d1e2f1; }
+  #encounter-panel { margin-top: 6px; }
+  #encounter-panel .encounter-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px; }
+  #encounter-scene, #encounter-separation { height: 108px; }
+  #encounter-distance { display: block; color: #d1e2f1; }
   #scene { cursor: grab; touch-action: none; }
   #scene:active { cursor: grabbing; }
   @media (max-width: 620px) {
@@ -36,25 +55,91 @@
   <label><input type="checkbox" id="debris-orbits" checked> Show full debris orbits</label>
   <small>When off, debris leaves a short trail.</small>
 </div>
+<div id="follow-controls">
+  <span id="tracking-options" hidden>
+    <label for="follow">Follow satellite</label>
+    <select id="follow"><option value="">Earth overview</option></select>
+  </span>
+  <span id="camera-options" hidden>
+    <label for="camera-mode">Camera</label>
+    <select id="camera-mode"><option value="follow">Follow</option><option value="close">3D close-up</option></select>
+  </span>
+  <label for="speed">Playback speed</label>
+  <input id="speed" type="range" min="0.01" max="2" step="0.01" value="1">
+  <output id="speed-value" for="speed">1×</output>
+  <label title="Temporarily slow playback around the closest approach."><input id="slow-near" type="checkbox"> Slow near encounters</label>
+</div>
 <main>
-  <canvas id="scene" tabindex="0" aria-label="Rotatable 3D encounter. Drag or use the arrow keys to rotate."></canvas>
+  <div id="scene-panel">
+    <canvas id="scene" tabindex="0" aria-label="Rotatable 3D encounter. Drag or use the arrow keys to rotate."></canvas>
+    <aside id="tracking-panel" hidden aria-label="Tracked satellite telemetry">
+      <strong id="tracking-name"></strong>
+      <output id="tracking-velocity"></output>
+      <small id="tracking-components"></small>
+      <span>Trajectory</span>
+      <canvas id="tracking-path" aria-label="Tracked satellite local trajectory"></canvas>
+    </aside>
+    <div id="avoidance-windows">
+      <aside id="avoidance-panel" hidden aria-label="Avoidance close-up">
+        <strong>Avoidance close-up</strong>
+        <canvas id="avoidance-scene" aria-label="Satellite and simulated debris during the avoided pass"></canvas>
+        <small id="avoidance-distance"></small>
+      </aside>
+      <aside id="encounter-panel" hidden aria-label="Guided-style 3D encounter and separation">
+        <strong>3D encounter</strong>
+        <div class="encounter-grid">
+          <canvas id="encounter-scene" aria-label="Gridded 3D close-up of the encounter"></canvas>
+          <canvas id="encounter-separation" aria-label="Separation in kilometers by time relative to closest approach"></canvas>
+        </div>
+        <small id="encounter-distance"></small>
+      </aside>
+    </div>
+  </div>
   <canvas id="separation" aria-label="Separation in kilometers against time from closest approach in seconds."></canvas>
 </main>
 <script>
 const {
     frames, labels, earthRadiusKm, satelliteCount, live = false, continuous = false, sequence = 0,
-    showTimeline = true, simulatedCount = 0, frameIntervalMs = 65,
+    showTimeline = true, simulatedCount = 0, frameIntervalMs = 65, clockStepS = earthRadiusKm ? 60 : 0.05,
+    nominalPath = [], burnOffsetS = null, maneuverPhases = {},
+    encounterTimes = [], avoidedPasses = [],
 } = __ENCOUNTER_DATA__;
 const scene = document.getElementById("scene");
 const graph = document.getElementById("separation");
+const follow = document.getElementById("follow");
+const cameraMode = document.getElementById("camera-mode");
+const cameraOptions = document.getElementById("camera-options");
+const speed = document.getElementById("speed");
+const speedValue = document.getElementById("speed-value");
+const slowNear = document.getElementById("slow-near");
+const trackingPanel = document.getElementById("tracking-panel");
+const trackingName = document.getElementById("tracking-name");
+const trackingVelocity = document.getElementById("tracking-velocity");
+const trackingComponents = document.getElementById("tracking-components");
+const trackingPath = document.getElementById("tracking-path");
+const avoidancePanel = document.getElementById("avoidance-panel");
+const avoidanceScene = document.getElementById("avoidance-scene");
+const avoidanceDistance = document.getElementById("avoidance-distance");
+const encounterPanel = document.getElementById("encounter-panel");
+const encounterScene = document.getElementById("encounter-scene");
+const encounterSeparation = document.getElementById("encounter-separation");
+const encounterDistance = document.getElementById("encounter-distance");
+let recentAvoidance = avoidedPasses;
 if (earthRadiusKm) {
     graph.hidden = true;
     document.querySelector("main").classList.add("orbit-only");
+    document.getElementById("tracking-options").hidden = satelliteCount === 0;
+    labels.slice(0, satelliteCount).forEach((label, index) => follow.add(new Option(label, String(index))));
+    // Leave space for the follow controls above the canvas.
+    scene.style.height = "360px";
 }
 const slider = document.getElementById("timeline");
 slider.hidden = !showTimeline;
 const time = document.getElementById("time");
-const interval = frameIntervalMs;
+const baseRate = clockStepS / frameIntervalMs;
+let playbackRate = baseRate;
+let slowEnabled = false;
+let slowWindows = [];
 const colors = ["#62daf4", "#ffbb70"];
 const satelliteColors = [colors[0], "#bda4ff", "#8ce3a9", "#f2d77b"];
 const debrisOrbits = document.getElementById("debris-orbits");
@@ -65,7 +150,6 @@ function sceneExtent() {
 }
 let extent = sceneExtent();
 const gridStepKm = Math.max(1, Math.round(extent / 4));
-const maxDistance = earthRadiusKm ? 1 : Math.ceil(Math.max(...frames.map(frame => frame.distance)) / 5) * 5 || 1;
 const simulatedColor = "#f89bc2";
 function colorFor(object) {
     if (object < satelliteCount) return satelliteColors[object % satelliteColors.length];
@@ -73,16 +157,39 @@ function colorFor(object) {
 }
 const trailSamples = 6;
 let index = 0;
+let simulatedTime = frames[0].time;
+let lastDraw = -Infinity;
+const drawInterval = labels.length > 80 ? 32 : 0;
 let yaw = -0.35;
 let pitch = 0.4;
 let pointer = null;
-let start = 0;
+let wallStart = 0;
+let simulationStart = simulatedTime;
 let timer = null;
 let playing = false;
 let waiting = false;
 let packetSequence = sequence;
 let requestedSequence = sequence;
 slider.max = frames.length - 1;
+addSlowWindows(encounterTimes);
+
+function addSlowWindows(times) {
+    const radius = earthRadiusKm ? 12 : 1.25;
+    const windows = [
+        ...slowWindows.filter(window => window.end >= simulatedTime),
+        ...times.map(time => ({start: time - radius, end: time + radius})),
+    ].sort((a, b) => a.start - b.start);
+    slowWindows = [];
+    for (const window of windows) {
+        const previous = slowWindows.at(-1);
+        if (previous && previous.end >= window.start) previous.end = Math.max(previous.end, window.end);
+        else slowWindows.push(window);
+    }
+}
+
+function slowRate() {
+    return Math.min(playbackRate, earthRadiusKm ? 0.004 : baseRate * 0.35);
+}
 
 function prepare(canvas) {
     const width = canvas.clientWidth;
@@ -97,13 +204,68 @@ function prepare(canvas) {
     return {ctx, width, height};
 }
 
-function drawScene(frame) {
-    const {ctx, width, height} = prepare(scene);
-    const scale = Math.min(width, height) * 0.42 / Math.max(extent, 1);
-    const cy = Math.cos(yaw), sy = Math.sin(yaw);
-    const cp = Math.cos(pitch), sp = Math.sin(pitch);
-    const earthRadius = earthRadiusKm * scale;
-    function project([x, y, z]) {
+function drawEarth(ctx, x, y, radius) {
+    const light = ctx.createRadialGradient(
+        x - radius * 0.35, y - radius * 0.4, 0, x, y, radius,
+    );
+    light.addColorStop(0, "#6194c2");
+    light.addColorStop(1, "#1c3557");
+    ctx.fillStyle = light;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, 2 * Math.PI);
+    ctx.fill();
+}
+
+function drawScene(frame, canvas = scene, focus = null) {
+    const {ctx, width, height} = prepare(canvas);
+    const followed = focus ? focus.primary : follow.value === "" ? null : Number(follow.value);
+    const target = followed === null ? null : frame.positions[followed];
+    const close = target && (focus || cameraMode.value === "close");
+    const followEarth = target && !close;
+    const origin = close ? target : followEarth ? target.map(value => value / 2) : [0, 0, 0];
+    const distanceFromEarth = followEarth ? Math.hypot(...target) : 0;
+    let viewExtent = extent;
+    if (close) {
+        const nearby = focus ? [frame.positions[focus.debris]] : frame.positions.slice(satelliteCount);
+        const nearest = nearby.reduce(
+            (distance, point) => point ? Math.min(distance, Math.hypot(...point.map((v, i) => v - target[i]))) : distance,
+            Infinity,
+        );
+        viewExtent = Math.max(25, Math.min(140, nearest * 1.7));
+    }
+    const scale = followEarth
+        ? Math.min(width * 0.44 / (earthRadiusKm + distanceFromEarth / 2), height * 0.39 / earthRadiusKm)
+        : Math.min(width, height) * 0.42 / Math.max(viewExtent, 1);
+    const cameraYaw = focus?.guided ? -0.12 : yaw;
+    const cameraPitch = focus?.guided ? 0.48 : pitch;
+    const cy = Math.cos(cameraYaw), sy = Math.sin(cameraYaw);
+    const cp = Math.cos(cameraPitch), sp = Math.sin(cameraPitch);
+    const earthRadius = close ? 0 : earthRadiusKm * scale;
+    let followBasis;
+    if (followEarth && distanceFromEarth) {
+        // Keep the radial line across the viewport as the satellite orbits.
+        const radial = target.map(value => value / distanceFromEarth);
+        const reference = Math.abs(radial[2]) < 0.95 ? [0, 0, 1] : [0, 1, 0];
+        const side = [
+            reference[1] * radial[2] - reference[2] * radial[1],
+            reference[2] * radial[0] - reference[0] * radial[2],
+            reference[0] * radial[1] - reference[1] * radial[0],
+        ];
+        const norm = Math.hypot(...side);
+        const tangent = side.map(value => value / norm);
+        const normal = [
+            radial[1] * tangent[2] - radial[2] * tangent[1],
+            radial[2] * tangent[0] - radial[0] * tangent[2],
+            radial[0] * tangent[1] - radial[1] * tangent[0],
+        ];
+        followBasis = [radial, tangent, normal];
+    }
+    function project(position) {
+        const dx = position[0] - origin[0], dy = position[1] - origin[1], dz = position[2] - origin[2];
+        const dot = axis => dx * axis[0] + dy * axis[1] + dz * axis[2];
+        const x = followBasis ? dot(followBasis[0]) : dx;
+        const y = followBasis ? dot(followBasis[1]) : dy;
+        const z = followBasis ? dot(followBasis[2]) : dz;
         const side = sy * x + cy * y;
         return [
             width / 2 + scale * (cy * x - sy * y),
@@ -111,34 +273,37 @@ function drawScene(frame) {
             sp * side + cp * z
         ];
     }
+    const [earthX, earthY, earthDepth] = project([0, 0, 0]);
     function visible([x, y, depth]) {
         // Test against the front surface of the Earth in camera coordinates.
-        const projectedRadius = Math.hypot(x - width / 2, y - height / 2);
-        return projectedRadius >= earthRadius ||
-            depth * scale >= Math.sqrt(earthRadius ** 2 - projectedRadius ** 2);
+        const radiusSquared = (x - earthX) ** 2 + (y - earthY) ** 2;
+        return radiusSquared >= earthRadius ** 2 ||
+            (depth - earthDepth) * scale >= Math.sqrt(earthRadius ** 2 - radiusSquared);
+    }
+    if (close || !earthRadiusKm) {
+        // Draw a contextual limb behind the locally scaled encounter paths.
+        const radius = Math.min(width * 0.62, height * 0.91);
+        ctx.save();
+        ctx.globalAlpha = 0.65;
+        drawEarth(ctx, width * 0.53, height * 1.13, radius);
+        ctx.strokeStyle = "#73a8d3";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
     }
     if (earthRadius > 0) {
-        const x = width / 2, y = height / 2;
-        const light = ctx.createRadialGradient(
-            x - earthRadius * 0.35, y - earthRadius * 0.4, 0,
-            x, y, earthRadius,
-        );
-        light.addColorStop(0, "#6194c2");
-        light.addColorStop(1, "#1c3557");
-        ctx.fillStyle = light;
-        ctx.beginPath();
-        ctx.arc(x, y, earthRadius, 0, 2 * Math.PI);
-        ctx.fill();
-    } else {
-        const span = 4 * gridStepKm;
-        const floor = -gridStepKm;
+        drawEarth(ctx, earthX, earthY, earthRadius);
+    } else if (!earthRadiusKm || focus?.guided) {
+        const step = focus?.guided ? Math.max(1, Math.round(viewExtent / 4)) : gridStepKm;
+        const span = 4 * step;
+        const floor = origin[2] - step;
         ctx.lineWidth = 1;
         for (let i = -4; i <= 4; i++) {
-            const offset = i * gridStepKm;
-            const [x1, y1] = project([offset, -span, floor]);
-            const [x2, y2] = project([offset, span, floor]);
-            const [x3, y3] = project([-span, offset, floor]);
-            const [x4, y4] = project([span, offset, floor]);
+            const offset = i * step;
+            const [x1, y1] = project([origin[0] + offset, origin[1] - span, floor]);
+            const [x2, y2] = project([origin[0] + offset, origin[1] + span, floor]);
+            const [x3, y3] = project([origin[0] - span, origin[1] + offset, floor]);
+            const [x4, y4] = project([origin[0] + span, origin[1] + offset, floor]);
             ctx.strokeStyle = i === 0 ? "#60758e" : "#354253";
             ctx.beginPath();
             ctx.moveTo(x1, y1);
@@ -148,7 +313,25 @@ function drawScene(frame) {
             ctx.stroke();
         }
     }
-    labels.forEach((_, object) => {
+    const referencePath = nominalPath.length ? nominalPath :
+        (followed === null ? [] : frames.map(sample => sample.nominalPositions?.[followed]));
+    if (referencePath.some(Boolean)) {
+        ctx.strokeStyle = "#8798ad";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        let previousVisible = false;
+        for (const position of referencePath) {
+            const point = position && project(position);
+            const isVisible = point && visible(point);
+            if (isVisible && previousVisible) ctx.lineTo(point[0], point[1]);
+            else if (isVisible) ctx.moveTo(point[0], point[1]);
+            previousVisible = isVisible;
+        }
+        ctx.stroke();
+    }
+    const objects = focus ? [focus.primary, focus.debris] : labels.map((_, object) => object);
+    objects.forEach(object => {
         const isDebris = object >= satelliteCount;
         const trailOnly = live && isDebris && !debrisOrbits.checked;
         const first = trailOnly ? Math.max(0, index - trailSamples + 1) : 0;
@@ -159,7 +342,9 @@ function drawScene(frame) {
         ctx.setLineDash(trailOnly ? [] : [4, 5]);
         ctx.beginPath();
         let previousVisible = false;
-        for (let sample = first; sample < end; sample++) {
+        // Keep the background orbit paths inexpensive for large debris samples.
+        const stride = live && isDebris && !trailOnly ? Math.max(1, Math.ceil((end - first) / 96)) : 1;
+        for (let sample = first; sample < end; sample += stride) {
             const position = frames[sample].positions[object];
             const point = position && project(position);
             const isVisible = point && visible(point);
@@ -167,24 +352,32 @@ function drawScene(frame) {
             else if (isVisible) ctx.moveTo(point[0], point[1]);
             previousVisible = isVisible;
         }
+        if (trailOnly && previousVisible && frame.positions[object]) {
+            const point = project(frame.positions[object]);
+            if (visible(point)) ctx.lineTo(point[0], point[1]);
+        }
         ctx.stroke();
     });
     ctx.globalAlpha = 1;
     ctx.setLineDash([]);
-    const markers = frame.positions.flatMap((point, object) => point ? [{object, position: project(point)}] : []);
+    const markers = objects.flatMap(object => {
+        const point = frame.positions[object];
+        return point ? [{object, position: project(point)}] : [];
+    });
     markers.sort((a, b) => a.position[2] - b.position[2]);
-    markers.filter(marker => visible(marker.position)).forEach(({object, position: [x, y]}) => {
+    markers.filter(marker => marker.object === followed || visible(marker.position)).forEach(({object, position: [x, y]}) => {
         ctx.fillStyle = colorFor(object);
         ctx.beginPath();
         ctx.arc(x, y, live && object >= satelliteCount ? 2.5 : 5, 0, 2 * Math.PI);
         ctx.fill();
     });
-    const legend = labels.slice(0, live ? Math.min(satelliteCount, 4) : labels.length)
+    const legend = focus ? [] : labels.slice(0, live ? Math.min(satelliteCount, 4) : labels.length)
         .map((label, i) => [label, colorFor(i)]);
-    if (live) {
+    if (live && !focus) {
         legend.push([`${labels.length - satelliteCount - simulatedCount} catalog debris`, colors[1]]);
         if (simulatedCount) legend.push([`${simulatedCount} simulated debris`, simulatedColor]);
     }
+    if (!focus && referencePath.some(Boolean)) legend.push(["Original satellite path", "#8798ad"]);
     legend.forEach(([label, color], i) => {
         ctx.fillStyle = color;
         ctx.fillText(label, 12, 22 + 18 * i);
@@ -193,7 +386,16 @@ function drawScene(frame) {
         ctx.fillStyle = "#a1b1c2";
         ctx.fillText(`Grid: ${gridStepKm} km per square`, 12, height - 12);
     }
-    if (frame.impact) {
+    if (close) {
+        ctx.strokeStyle = "#a1b1c2";
+        ctx.beginPath();
+        ctx.moveTo(width - 15 - 10 * scale, height - 18);
+        ctx.lineTo(width - 15, height - 18);
+        ctx.stroke();
+        ctx.fillStyle = "#a1b1c2";
+        ctx.fillText("10 km", width - 52, height - 25);
+    }
+    if (frame.impact && !focus) {
         const [x, y] = project(frame.positions[frame.impactObject ?? 0]);
         ctx.strokeStyle = "#ff5757";
         ctx.lineWidth = 2;
@@ -206,10 +408,83 @@ function drawScene(frame) {
     }
 }
 
-function drawGraph(frame) {
-    const {ctx, width, height} = prepare(graph);
-    const left = 48, right = width - 18, top = 36, bottom = height - 50;
-    const first = frames[0].time, last = frames.at(-1).time;
+function drawAvoidance(frame) {
+    const pass = recentAvoidance.find(event => Math.abs(frame.time - event.time) <= 12);
+    const primary = pass && frame.positions[pass.primary];
+    const debris = pass && frame.positions[pass.debris];
+    avoidancePanel.hidden = !primary || !debris;
+    encounterPanel.hidden = avoidancePanel.hidden;
+    if (avoidancePanel.hidden) return;
+    drawScene(frame, avoidanceScene, pass);
+    const separation = Math.hypot(...primary.map((coordinate, i) => coordinate - debris[i]));
+    avoidanceDistance.textContent = `${labels[pass.primary]} · ${separation.toFixed(2)} km separation`;
+    drawScene(frame, encounterScene, {...pass, guided: true});
+    const samples = frames.filter(sample => Math.abs(sample.time - pass.time) <= 12)
+        .flatMap(sample => {
+            const first = sample.positions[pass.primary], second = sample.positions[pass.debris];
+            return first && second
+                ? [{time: sample.time, distance: Math.hypot(...first.map((value, i) => value - second[i]))}]
+                : [];
+        });
+    drawGraph({time: frame.time, distance: separation}, encounterSeparation, samples, pass.time);
+    encounterDistance.textContent = `Closest approach: ${pass.missKm.toFixed(2)} km`;
+}
+
+function drawTracking(frame) {
+    trackingPanel.hidden = follow.value === "";
+    if (trackingPanel.hidden) return;
+    const object = Number(follow.value);
+    trackingName.textContent = labels[object];
+    const before = frames[Math.max(0, index - 1)];
+    const after = frames[Math.min(frames.length - 1, index + 1)];
+    const span = after.time - before.time;
+    const p1 = before.positions[object], p2 = after.positions[object];
+    const velocity = span > 0 && p1 && p2 ? p2.map((value, i) => (value - p1[i]) / span) : null;
+    trackingVelocity.textContent = velocity ? `TEME speed ≈ ${Math.hypot(...velocity).toFixed(2)} km/s` : "TEME speed unavailable";
+    trackingComponents.textContent = velocity
+        ? velocity.map((value, i) => `${"XYZ"[i]} ${value.toFixed(2)}`).join(" · ")
+        : "";
+    const {ctx, width, height} = prepare(trackingPath);
+    const samples = frames.slice(Math.max(0, index - 5), index + 6);
+    const points = samples.map(sample => sample.positions[object]).filter(Boolean);
+    const current = frame.positions[object];
+    if (!current || points.length < 2) return;
+    // Fit a small local view of the same trajectory to the panel.
+    const relative = points.map(point => point.map((value, i) => value - current[i]));
+    const xAxis = relative.at(-1).map((value, i) => value - relative[0][i]);
+    const norm = Math.hypot(...xAxis);
+    if (!norm) return;
+    const along = xAxis.map(value => value / norm);
+    const shape = relative.map(point => {
+        const x = point.reduce((sum, value, i) => sum + value * along[i], 0);
+        const heightKm = Math.hypot(...point.map((value, i) => value - x * along[i]));
+        return [x, heightKm];
+    });
+    const maxX = Math.max(1, ...shape.map(point => Math.abs(point[0])));
+    const maxY = Math.max(1, ...shape.map(point => point[1]));
+    ctx.strokeStyle = colorFor(object);
+    ctx.beginPath();
+    shape.forEach(([x, y], index) => {
+        const px = width / 2 + x / maxX * (width / 2 - 5);
+        const py = height - 6 - y / maxY * (height - 12);
+        if (index === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+    ctx.fillStyle = colorFor(object);
+    ctx.beginPath();
+    ctx.arc(width / 2, height - 6, 3, 0, 2 * Math.PI);
+    ctx.fill();
+}
+
+function drawGraph(frame, canvas = graph, samples = frames, center = 0) {
+    const {ctx, width, height} = prepare(canvas);
+    if (samples.length < 2) return;
+    const compact = canvas !== graph;
+    const left = compact ? 26 : 48, right = width - (compact ? 10 : 18);
+    const top = compact ? 20 : 36, bottom = height - (compact ? 24 : 50);
+    const first = samples[0].time, last = samples.at(-1).time;
+    const maxDistance = Math.ceil(Math.max(...samples.map(sample => sample.distance)) / 5) * 5 || 1;
     const xAt = value => left + (value - first) * (right - left) / (last - first);
     const yAt = value => bottom - value * (bottom - top) / maxDistance;
     ctx.strokeStyle = "#718198";
@@ -220,16 +495,22 @@ function drawGraph(frame) {
     ctx.stroke();
     ctx.fillStyle = "#e6edf5";
     ctx.textAlign = "left";
-    ctx.fillText("Separation (km)", left, 21);
+    if (compact) ctx.font = "10px system-ui";
+    ctx.fillText(compact ? "Miss (km)" : "Separation (km)", left, compact ? 12 : 21);
     ctx.textAlign = "right";
     [0, maxDistance / 2, maxDistance].forEach(value => ctx.fillText(value.toFixed(1), left - 7, yAt(value) + 4));
     ctx.textAlign = "center";
-    [first, (first + last) / 2, last].forEach(value => ctx.fillText(value.toFixed(2), xAt(value), bottom + 18));
-    ctx.fillText("Time from closest approach (s)", (left + right) / 2, bottom + 38);
+    if (compact) {
+        ctx.fillText(`${(first - center).toFixed(0)}s`, xAt(first), bottom + 14);
+        ctx.fillText(`+${(last - center).toFixed(0)}s`, xAt(last), bottom + 14);
+    } else {
+        [first, (first + last) / 2, last].forEach(value => ctx.fillText(value.toFixed(2), xAt(value), bottom + 18));
+        ctx.fillText("Time from closest approach (s)", (left + right) / 2, bottom + 38);
+    }
     ctx.strokeStyle = colors[0];
     ctx.lineWidth = 2;
     ctx.beginPath();
-    frames.forEach((sample, i) => {
+    samples.forEach((sample, i) => {
         const x = xAt(sample.time), y = yAt(sample.distance);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
@@ -237,17 +518,53 @@ function drawGraph(frame) {
     ctx.stroke();
     ctx.fillStyle = frame.impact ? "#ff5757" : colors[1];
     ctx.beginPath();
-    ctx.arc(xAt(frame.time), yAt(frame.distance), 5, 0, 2 * Math.PI);
+    ctx.arc(xAt(frame.time), yAt(frame.distance), compact ? 3 : 5, 0, 2 * Math.PI);
     ctx.fill();
 }
 
+function frameAtCursor() {
+    const first = frames[index];
+    const next = frames[index + 1];
+    const fraction = next ? (simulatedTime - first.time) / (next.time - first.time) : 0;
+    if (!next || fraction === 0) return first;
+    const positions = first.positions.map((position, object) => {
+        const following = next.positions[object];
+        if (!position || !following) return position;
+        return position.map((value, axis) => value + fraction * (following[axis] - value));
+    });
+    return {
+        ...first,
+        positions,
+        time: simulatedTime,
+        distance: !earthRadiusKm && positions[0] && positions[1]
+            ? Math.hypot(...positions[0].map((value, axis) => value - positions[1][axis]))
+            : first.distance,
+    };
+}
+
 function render() {
-    const frame = frames[index];
+    const frame = frameAtCursor();
     slider.value = index;
-    time.textContent = frame.impact
-        ? "Contact · " + frame.time.toFixed(2) + " s"
-        : frame.time.toFixed(2) + " s";
+    const phases = follow.value === "" ? Object.values(maneuverPhases)[0] : maneuverPhases[follow.value];
+    let status = "";
+    if (frame.impact) status = "Contact snapshot · ";
+    else if (phases && frame.time >= phases[0]) {
+        const [, endBurn, startRecovery, endRecovery] = phases;
+        if (frame.time < endBurn) status = "Avoidance burn · ";
+        else if (frame.time < startRecovery) status = "Coasting on avoidance path · ";
+        else if (frame.time < endRecovery) status = "Returning to orbit · ";
+        else status = "Nominal orbit restored · ";
+    } else if (!Object.keys(maneuverPhases).length && burnOffsetS !== null && frame.time >= burnOffsetS) {
+        status = "Post-burn · ";
+    }
+    if (!frame.impact && slowEnabled && slowRate() < playbackRate
+        && slowWindows.some(window => frame.time >= window.start && frame.time < window.end)) {
+        status = "Slow motion · " + status;
+    }
+    time.textContent = status + frame.time.toFixed(2) + " s";
     drawScene(frame);
+    drawTracking(frame);
+    drawAvoidance(frame);
     if (!earthRadiusKm) drawGraph(frame);
 }
 
@@ -261,17 +578,50 @@ function requestContinuation() {
     requestedSequence = packetSequence + 1;
     parent.postMessage({type: "orbit-next", sequence: requestedSequence}, "*");
 }
+function clockTime(now) {
+    // Sample density affects interpolation precision, never the simulation clock rate.
+    const end = frames.at(-1).time;
+    let remainingMs = Math.max(0, now - wallStart);
+    let elapsed = simulationStart;
+    if (slowEnabled && slowRate() < playbackRate) {
+        const rate = slowRate();
+        for (const window of slowWindows) {
+            if (window.end <= elapsed) continue;
+            if (window.start >= end) break;
+            if (elapsed < window.start) {
+                const untilWindow = (window.start - elapsed) / playbackRate;
+                if (remainingMs <= untilWindow) return Math.min(end, elapsed + remainingMs * playbackRate);
+                elapsed = window.start;
+                remainingMs -= untilWindow;
+            }
+            const withinWindow = (window.end - elapsed) / rate;
+            if (remainingMs <= withinWindow) return Math.min(end, elapsed + remainingMs * rate);
+            elapsed = window.end;
+            remainingMs -= withinWindow;
+        }
+    }
+    return Math.min(end, elapsed + remainingMs * playbackRate);
+}
+
+function rebaseClock() {
+    const now = performance.now();
+    simulationStart = playing && !waiting ? Math.max(simulatedTime, clockTime(now)) : simulatedTime;
+    wallStart = now;
+}
 function tick(now) {
     if (!playing) return;
-    const next = Math.min(frames.length - 1, Math.max(0, Math.floor((now - start) / interval)));
-    if (next !== index) {
-        index = next;
+    const lastTime = frames.at(-1).time;
+    const next = clockTime(now);
+    if (next !== simulatedTime && (now - lastDraw >= drawInterval || next === lastTime)) {
+        simulatedTime = next;
+        while (index + 1 < frames.length && frames[index + 1].time <= simulatedTime) index++;
+        lastDraw = now;
         render();
     }
     if (frames[index].impact) {
         stop();
     } else if (index < frames.length - 1) {
-        if (frames.length - index < 32) requestContinuation();
+        if (lastTime - simulatedTime < playbackRate * 2000) requestContinuation();
         timer = requestAnimationFrame(tick);
     } else if (continuous) {
         waiting = true;
@@ -280,33 +630,42 @@ function tick(now) {
     } else {
         // The close-up is a replay of the selected encounter.
         index = 0;
-        start = now;
+        simulatedTime = frames[0].time;
+        simulationStart = simulatedTime;
+        wallStart = now;
         render();
         timer = requestAnimationFrame(tick);
     }
 }
 function play() {
     if (playing || (continuous && frames[index].impact)) return;
-    if (index === frames.length - 1) {
+    if (!continuous && index === frames.length - 1) {
         index = 0;
+        simulatedTime = frames[0].time;
         render();
     }
     playing = true;
-    start = performance.now() - index * interval;
+    simulationStart = simulatedTime;
+    wallStart = performance.now();
     timer = requestAnimationFrame(tick);
 }
 window.addEventListener("message", event => {
     if (!continuous || event.source !== parent || event.data?.type !== "orbit-block") return;
     const {packet} = event.data;
     if (packet.sequence !== packetSequence + 1) return;
+    if (slowEnabled) rebaseClock();
     const lastTime = frames.at(-1).time;
     const overlap = packet.frames[0];
     if (overlap.time === lastTime && overlap.impact) frames[frames.length - 1] = overlap;
     const drop = Math.max(0, index - trailSamples);
     frames.splice(0, drop);
     index -= drop;
-    start += drop * interval;
     frames.push(...packet.frames.filter(frame => frame.time > lastTime));
+    addSlowWindows(packet.encounterTimes ?? []);
+    recentAvoidance = [
+        ...recentAvoidance.filter(event => event.time + 12 >= simulatedTime),
+        ...(packet.avoidedPasses ?? []),
+    ];
     packetSequence = packet.sequence;
     extent = sceneExtent();
     slider.max = frames.length - 1;
@@ -314,7 +673,8 @@ window.addEventListener("message", event => {
     if (waiting) {
         waiting = false;
         if (playing) {
-            start = performance.now() - index * interval;
+            simulationStart = simulatedTime;
+            wallStart = performance.now();
             timer = requestAnimationFrame(tick);
         }
     }
@@ -322,9 +682,26 @@ window.addEventListener("message", event => {
 document.getElementById("play").onclick = play;
 document.getElementById("pause").onclick = stop;
 debrisOrbits.onchange = render;
+follow.onchange = () => {
+    cameraOptions.hidden = follow.value === "";
+    render();
+};
+cameraMode.onchange = render;
+speed.oninput = () => {
+    rebaseClock();
+    const rate = Number(speed.value);
+    playbackRate = baseRate * rate;
+    speedValue.textContent = rate + "×";
+};
+slowNear.onchange = () => {
+    rebaseClock();
+    slowEnabled = slowNear.checked;
+    render();
+};
 slider.oninput = () => {
     stop();
     index = Number(slider.value);
+    simulatedTime = frames[index].time;
     render();
 };
 scene.onpointerdown = event => {
