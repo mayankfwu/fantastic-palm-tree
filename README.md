@@ -39,7 +39,7 @@ Open [localhost:8501](http://localhost:8501) if Streamlit does not open your bro
 
 ## Quick demo for evaluators
 
-1. Leave **Demo mode** on and select **Guided replay**. Under **Encounter to inspect**, choose debris **34387**, the closest predicted pass. Select **3D close-up** to watch the objects move and see the separation graph update.
+1. You will be on offline catalog, choose the satellites from the dropdownbox (you can choose multiple). You can edit the no. of debris that already are orbiting earth but are not on collision course, edit the no. of simulated debris to test the collision avoidance system of the satellites, you can rotate the planet to get better viewing angles.
 2. Turn on **Simulate an impact** to stage a collision and pause on contact. Keep it on and enable **Apply avoidance maneuver** to replay the staged encounter with a burn that changes the satellite’s trajectory. The replay overlays its original path for comparison.
 3. Scroll to **Risk Assessment & Avoidance Planning** below the visualization. Compare the estimated collision probability, suggested burn time, Δv, and propellant cost for the two catalog encounters. The panel uses the selected catalog prediction when the illustrative impact is enabled.
 
