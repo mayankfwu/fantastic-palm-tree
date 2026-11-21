@@ -8,10 +8,13 @@ import numpy as np
 import plotly.graph_objects as go
 
 from src.contracts import Conjunction
-from src.orbits import propagate
+from src.orbits import find_conjunctions, propagate
 
 PRIMARY_COLOR = "#62daf4"
 DEBRIS_COLOR = "#ffbb70"
+EARTH_RADIUS_KM = 6378.137
+WINDOW_S = 6000
+CONTACT_KM = 0.01
 
 
 def _sample_positions(primary, secondary, encounter, offsets_s, simulate_impact):
@@ -67,7 +70,7 @@ def orbit_html(primary, secondary, encounter: Conjunction, primary_name: str, *,
     primary_path, debris_path = _sample_positions(primary, secondary, encounter, offsets_s, simulate_impact)
     return _scene_html(
         offsets_s, primary_path, debris_path, primary_name, encounter.secondary_id,
-        simulate_impact, earth_radius_km=6378.137,
+        simulate_impact, earth_radius_km=EARTH_RADIUS_KM,
     )
 
 
@@ -110,6 +113,7 @@ def _scene_html(
     distances = np.linalg.norm(primary_path - debris_path, axis=1)
     data = {
         "labels": [primary_name, f"Debris {debris_id}"],
+        "satelliteCount": 1,
         "earthRadiusKm": earth_radius_km,
         "frames": [
             {
@@ -123,7 +127,56 @@ def _scene_html(
             )
         ],
     }
+    return _embed_scene(data)
+
+
+def orbit_window(satellites, debris, start, sequence, *, show_timeline=True) -> dict:
+    """Build a 100-minute block of TEME km positions and check for contact."""
+    first_s = sequence * WINDOW_S
+    first_time = start + timedelta(seconds=first_s)
+    offsets_s = list(range(first_s, first_s + WINDOW_S + 1, 60))
+    debris_models = [model for _, model in debris]
+    contact = min(
+        (
+            event
+            for _, primary in satellites
+            for event in find_conjunctions(primary, debris_models, first_time, WINDOW_S / 3600, screen_km=CONTACT_KM)
+        ),
+        key=lambda event: event.tca, default=None,
+    ) if debris_models else None
+    if contact is not None:
+        contact_s = (contact.tca - start).total_seconds()
+        offsets_s = [offset for offset in offsets_s if offset < contact_s] + [contact_s]
+    times = [start + timedelta(seconds=offset) for offset in offsets_s]
+    objects = [*satellites, *debris]
+    paths = [propagate(model, times)[0] for _, model in objects]
+    primary_index = next((i for i, (_, model) in enumerate(satellites) if contact and model.satnum == contact.primary_id), None)
+    return {
+        "labels": [name for name, _ in objects],
+        "satelliteCount": len(satellites),
+        "earthRadiusKm": EARTH_RADIUS_KM,
+        "live": True,
+        "continuous": True,
+        "showTimeline": show_timeline,
+        "sequence": sequence,
+        "frames": [
+            {
+                "time": offset,
+                "positions": [
+                    path[index].round(3).tolist() if np.isfinite(path[index]).all() else None
+                    for path in paths
+                ],
+                "impact": contact is not None and index == len(offsets_s) - 1,
+                "impactObject": primary_index,
+            }
+            for index, offset in enumerate(offsets_s)
+        ],
+    }
+
+
+def _embed_scene(data: dict) -> str:
+    """Embed the orbital scene with km positions and time offsets in seconds."""
     template = Path(__file__).with_name("orbit_scene.html").read_text()
-    return template.replace("__ENCOUNTER_DATA__", json.dumps(data).replace("<", r"\u003c"))
+    return template.replace("__ENCOUNTER_DATA__", json.dumps(data, allow_nan=False).replace("<", r"\u003c"))
 
 

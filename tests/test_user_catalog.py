@@ -88,3 +88,11 @@ class UserCatalogTest(unittest.TestCase):
             import_user_omm("not JSON", "satellite", **self.catalog)
         with self.assertRaises(ValueError):
             load_user_catalog("unknown", **self.catalog)
+
+    def test_sgp4_catalog_number_limit(self):
+        """Accept the highest unitless SGP4 catalog ID and explain larger IDs."""
+        largest = dict(OMM, NORAD_CAT_ID=339999)
+        self.assertEqual(import_user_omm(json.dumps(largest), "satellite", **self.catalog), [339999])
+        larger = dict(OMM, NORAD_CAT_ID=123456789)
+        with self.assertRaisesRegex(ValueError, "between 1 and 339999 for SGP4"):
+            import_user_omm(json.dumps(larger), "satellite", **self.catalog)

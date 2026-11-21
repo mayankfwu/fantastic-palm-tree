@@ -20,35 +20,63 @@ _LOG = logging.getLogger(__name__)
 
 def load_catalog(group: str) -> list[Satrec]:
     """Load Earth TEME SGP4 models with UTC epochs from a CelesTrak group."""
+    return [model for _, model in load_named_catalog(group)]
+
+
+def load_named_catalog(group: str) -> list[tuple[str, Satrec]]:
+    """Load CelesTrak names and SGP4 models with TEME km and UTC epochs."""
     if not re.fullmatch(r"[a-zA-Z0-9-]+", group):
         raise ValueError("Invalid CelesTrak group name")
     group = group.lower()
     path = CACHE_DIR / f"{group}.json"
     try:
-        records = json.loads(path.read_text())
-        if not isinstance(records, list) or time.time() - path.stat().st_mtime >= CACHE_SECONDS:
-            records = None
+        cached_records = json.loads(path.read_text())
+        cache_age = time.time() - path.stat().st_mtime
     except (FileNotFoundError, ValueError):
-        records = None
+        cached_records = None
 
-    if records is None:
+    if isinstance(cached_records, list) and cache_age < CACHE_SECONDS:
+        satellites = _parse_records(cached_records, group)
+        if satellites:
+            return satellites
+
+    try:
         records = _download(group)
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(mode="w", dir=CACHE_DIR, delete=False) as pending:
-            temporary_path = Path(pending.name)
-            try:
-                json.dump(records, pending)
-                pending.close()
-                temporary_path.replace(path)
-            finally:
-                temporary_path.unlink(missing_ok=True)
+        satellites = _parse_records(records, group)
+        if not satellites:
+            raise ValueError(f"No usable GP records for {group}")
+    except (requests.RequestException, ValueError) as exc:
+        if isinstance(cached_records, list) and cache_age >= CACHE_SECONDS:
+            satellites = _parse_records(cached_records, group)
+            if satellites:
+                _LOG.warning(
+                    "Using stale CelesTrak cache for %s (%.1f hours old): %s",
+                    group, cache_age / 3600, exc,
+                )
+                return satellites
+        raise
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(mode="w", dir=CACHE_DIR, delete=False) as pending:
+        temporary_path = Path(pending.name)
+        try:
+            json.dump(records, pending)
+            pending.close()
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+    return satellites
 
+
+def _parse_records(records: list, group: str) -> list[tuple[str, Satrec]]:
+    """Convert JSON OMM records into SGP4 models with TEME km and km/s output."""
     satellites = []
     for index, record in enumerate(records, start=1):
         try:
             if not isinstance(record, dict):
                 raise ValueError("expected an OMM record")
-            satellites.append(_satellite_from_omm(record))
+            model = _satellite_from_omm(record)
+            name = record.get("OBJECT_NAME") or f"NORAD {model.satnum}"
+            satellites.append((str(name), model))
         except (AttributeError, KeyError, OverflowError, TypeError, ValueError) as exc:
             _LOG.warning("Skipping GP record %d from %s: %s", index, group, exc)
     return satellites
@@ -67,7 +95,10 @@ def _download(group: str) -> list:
                 raise
         else:
             if response.status_code == 200:
-                records = response.json()
+                try:
+                    records = response.json()
+                except ValueError as exc:
+                    raise ValueError(f"CelesTrak returned non-JSON GP data for group {group}") from exc
                 if not isinstance(records, list):
                     raise ValueError(f"Expected a GP JSON array for {group}")
                 return records
