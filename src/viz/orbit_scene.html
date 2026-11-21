@@ -52,7 +52,7 @@
   <output id="time" for="timeline"></output>
 </header>
 <div id="debris-controls" hidden>
-  <label><input type="checkbox" id="debris-orbits" checked> Show full debris orbits</label>
+  <label><input type="checkbox" id="debris-orbits"> Show full debris orbits</label>
   <small>When off, debris leaves a short trail.</small>
 </div>
 <div id="follow-controls">
@@ -67,7 +67,7 @@
   <label for="speed">Playback speed</label>
   <input id="speed" type="range" min="0.01" max="2" step="0.01" value="1">
   <output id="speed-value" for="speed">1×</output>
-  <label title="Temporarily slow playback around the closest approach."><input id="slow-near" type="checkbox"> Slow near encounters</label>
+  <label title="Temporarily slow playback around the closest approach."><input id="slow-near" type="checkbox" checked> Slow near encounters</label>
 </div>
 <main>
   <div id="scene-panel">
@@ -138,12 +138,12 @@ slider.hidden = !showTimeline;
 const time = document.getElementById("time");
 const baseRate = clockStepS / frameIntervalMs;
 let playbackRate = baseRate;
-let slowEnabled = false;
+let slowEnabled = slowNear.checked;
 let slowWindows = [];
 const colors = ["#62daf4", "#ffbb70"];
 const satelliteColors = [colors[0], "#bda4ff", "#8ce3a9", "#f2d77b"];
 const debrisOrbits = document.getElementById("debris-orbits");
-document.getElementById("debris-controls").hidden = !live;
+document.getElementById("debris-controls").hidden = !earthRadiusKm;
 function sceneExtent() {
     return frames.reduce((maximum, frame) => frame.positions.reduce(
         (local, point) => point ? Math.max(local, Math.hypot(...point)) : local, maximum), earthRadiusKm);
@@ -332,7 +332,7 @@ function drawScene(frame, canvas = scene, focus = null) {
     const objects = focus ? [focus.primary, focus.debris] : labels.map((_, object) => object);
     objects.forEach(object => {
         const isDebris = object >= satelliteCount;
-        const trailOnly = live && isDebris && !debrisOrbits.checked;
+        const trailOnly = earthRadiusKm > 0 && isDebris && !debrisOrbits.checked;
         const first = trailOnly ? Math.max(0, index - trailSamples + 1) : 0;
         const end = trailOnly ? index + 1 : frames.length;
         ctx.strokeStyle = colorFor(object);

@@ -6,7 +6,9 @@ Read [AGENTS.md](../AGENTS.md) for folder ownership and the shared interfaces. T
 
 ## Run the offline demo
 
-From the repository root, use Python 3.12. Set up the environment and start Streamlit.
+Reviewers can start Guided replay with `python3.12 run_demo.py` on macOS or Linux, or `py -3.12 run_demo.py` on Windows. Use the same command for offline launches after the first setup. [Reviewer quick start](../README.md#reviewer-quick-start)
+
+For manual setup and testing, run the following from the repository root using Python 3.12.
 
 ```bash
 python3.12 -m venv venv
@@ -42,12 +44,13 @@ The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMO
 
 ## Owner C — Streamlit and visualization
 
+- Codex added the cross-platform reviewer launcher in `run_demo.py`. On Linux, a clean installation and a second launch with package downloads disabled both served the dashboard from a checkout with spaces in its path.
 - The Streamlit app shows the frozen SCD 2 scenario and a ranked encounter table. The selected encounter drives a slow-motion 3D animation in satellite-relative km, a zoomed-out orbit view with a solid Earth in TEME km, and a separation chart in seconds from closest approach.
 - The 3D orbit view opens first. Both objects move in both views. The close-up draws a shaded Earth backdrop behind the encounter paths while the grid retains its local km scale. The illustrative impact option shifts the debris path to meet the satellite at closest approach and stops playback there. The ranked table always shows the orbital predictions.
 - The close-up updates the object positions and the separation graph marker together while the camera remains interactive.
 - The full orbit uses the same drag and arrow-key controls during playback. Earth is shaded and hides objects on its far side.
 - The player advances by simulated seconds at the selected rate and interpolates between propagation samples. Dense samples around a burn improve resolution while the playback clock keeps its rate. Contact uses the exact saved sample. Large debris sets use fewer background path points and a lower redraw rate.
-- **Slow near encounters** temporarily slows playback around catalog passes within 5 km and staged debris passes, then restores the chosen speed. Around a staged maneuver pass, the right-side **Avoidance close-up** and the lower **3D encounter** window show whether the refined miss meets the 5 km clearance. The lower window shows a gridded close-up and a separation graph that follows the same playback time.
+- The orbit player starts with **Show full debris orbits** off and **Slow near encounters** on. It draws short debris trails and temporarily slows playback around catalog passes within 5 km and staged debris passes, then restores the chosen speed. Around a staged maneuver pass, the right-side **Avoidance close-up** and the lower **3D encounter** window show whether the refined miss meets the 5 km clearance. The lower window shows a gridded close-up and a separation graph that follows the same playback time.
 - The full-orbit player has a **Follow satellite** selector and two tracking cameras. **Follow** keeps the satellite and Earth in view. **3D close-up** uses adaptive local zoom and a 10 km scale. Both show bottom-left TEME velocity and trajectory. Playback speed can be adjusted from 0.01× to 2×, including in Live mode. Offline avoidance adds one-second samples near each affected satellite's first staged encounter and draws its original path as a reference while followed.
 - The app caches ranked screening results across sessions with `st.cache_data` and keeps mutable SGP4 models in session state. It shows the count of debris element sets older than three days at the window start and the age of both selected objects' elements at closest approach. All snapshot records remain in the replay.
 - Turn off **Demo mode** for live CelesTrak catalogs. Search by satellite name or NORAD ID, add multiple satellites to the 3D scene, and choose a debris group and a random sample size. Resampling changes the session seed. The scene shows short debris trails when full debris orbits are hidden. Live screening uses one selected primary against the sampled debris.

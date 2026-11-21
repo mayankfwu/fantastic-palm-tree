@@ -9,8 +9,13 @@ function mountPlayer(packet) {
     const template = readFileSync(new URL("../src/viz/orbit_scene.html", import.meta.url), "utf8");
     const script = template.split("<script>")[1].split("</script>")[0];
     const elements = new Map();
+    let lineCount = 0;
     const graphics = new Proxy({}, {
-        get: (_, key) => key === "createRadialGradient" ? () => ({addColorStop() {}}) : () => {},
+        get: (_, key) => {
+            if (key === "createRadialGradient") return () => ({addColorStop() {}});
+            if (key === "lineTo") return () => { lineCount++; };
+            return () => {};
+        },
     });
     function element(id) {
         if (!elements.has(id)) {
@@ -20,6 +25,9 @@ function mountPlayer(packet) {
             });
         }
         return elements.get(id);
+    }
+    for (const [tag, id] of template.matchAll(/<input\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
+        element(id).checked = /\schecked\b/.test(tag);
     }
     let now = 0;
     let nextId = 0;
@@ -51,8 +59,34 @@ function mountPlayer(packet) {
         }});
     }
     vm.runInContext(script.replace("__ENCOUNTER_DATA__", JSON.stringify(packet)), context);
-    return {advance, animations, deliver, element};
+    return {advance, animations, deliver, element, drawnLines: () => lineCount};
 }
+
+test("orbit playback starts with short debris trails and slows automatically at an encounter", () => {
+    const frames = [0, 15, 30, 45].map(time => ({time, positions: [[8000, 0, 0], [8100, time, 0]]}));
+    const {advance, element, drawnLines} = mountPlayer({
+        frames, labels: ["Satellite", "Debris"], earthRadiusKm: 6378, satelliteCount: 1,
+        encounterTimes: [0], clockStepS: 10, frameIntervalMs: 1000,
+    });
+    const orbits = element("debris-orbits");
+    assert.equal(orbits.checked, false);
+    const before = drawnLines();
+    orbits.onchange();
+    const shortTrail = drawnLines() - before;
+    orbits.checked = true;
+    const beforeFullOrbit = drawnLines();
+    orbits.onchange();
+    assert.ok(drawnLines() - beforeFullOrbit > shortTrail);
+
+    const slow = element("slow-near");
+    assert.equal(slow.checked, true);
+    advance(1000);
+    assert.equal(element("time").textContent, "Slow motion · 4.00 s");
+    slow.checked = false;
+    slow.onchange();
+    advance(1000);
+    assert.equal(element("time").textContent, "14.00 s");
+});
 
 test("a delayed orbit window resumes playback only if the clock is still waiting", () => {
     const frames = [0, 60, 120].map(time => ({time, positions: [[7000, 0, 0]], impact: false}));
