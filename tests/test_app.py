@@ -27,6 +27,9 @@ def test_offline_demo_switches_encounter_view_and_impact():
     assert "90 of 581 debris element sets" in app.warning[0].value
     assert any("SCD 2 2.3 days · Debris 2.6 days" in caption.value for caption in app.caption)
     assert list(app.dataframe[0].value["Debris NORAD ID"]) == [34387, 36048]
+    assert list(app.dataframe[0].value["Closest approach (UTC)"]) == [
+        "2026-11-23 14:02:52.912", "2026-11-23 04:30:43.085",
+    ]
     assert app.radio[0].options == ["3D orbit", "3D close-up"]
     orbit = app.session_state.rolling_orbit_window[1]
     assert orbit["continuous"]
@@ -385,3 +388,45 @@ def test_offline_catalog_avoids_staged_debris_by_default():
         frame["time"] in avoided_positions and avoided_positions[frame["time"]] != frame["positions"][0]
         for frame in original["frames"]
     )
+
+
+def test_failed_live_debris_request_waits_before_retrying(monkeypatch):
+    """Keep the simulation usable during a catalog outage and recover after the cooldown in seconds."""
+    import time
+    from unittest.mock import Mock
+
+    import requests
+    from src.orbits import catalog
+
+    _, primary, debris = load_demo_scenario()
+    load = Mock(side_effect=[
+        [("SCD 2", primary)], requests.ConnectionError("Debris catalog offline"),
+        [("COSMOS 2251 DEB", debris[0])],
+    ])
+    monkeypatch.setattr(catalog, "load_named_catalog", load)
+    app = AppTest.from_file(Path(__file__).resolve().parents[1] / "app.py", default_timeout=10).run()
+    app.sidebar.toggle[0].set_value(False).run()
+    app.sidebar.multiselect[0].set_value([primary.satnum]).run()
+    assert any("Debris catalog offline" in warning.value for warning in app.warning)
+    assert app.session_state.rolling_orbit_window[1]["labels"] == ["SCD 2"]
+
+    next(w for w in app.sidebar.number_input if w.label == "Add simulated debris").set_value(1).run()
+    assert not app.exception
+    assert load.call_count == 2
+    assert app.session_state.rolling_orbit_window[1]["labels"] == ["SCD 2", "Simulated debris 1"]
+
+    real_clock = time.monotonic
+    monkeypatch.setattr(time, "monotonic", lambda: real_clock() + 61)
+    app.run()
+    assert not app.exception
+    assert load.call_count == 3
+    assert "COSMOS 2251 DEB" in app.session_state.rolling_orbit_window[1]["labels"]
+
+
+def test_close_up_of_two_objects_with_identical_orbits():
+    """Keep a finite 3D view in km when relative velocity and miss are both zero."""
+    scenario, primary, _ = load_demo_scenario()
+    encounter = Conjunction(primary.satnum, 99999, datetime.fromisoformat(scenario["start"]), 0, 0)
+    frames = _scene_data(close_up_html(primary, primary, encounter, "Co-orbital primary"))["frames"]
+    assert all(frame["distance"] == 0 for frame in frames)
+    assert frames[0]["positions"][0] != frames[-1]["positions"][0]

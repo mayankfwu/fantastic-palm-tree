@@ -2,8 +2,10 @@
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier, Event
 from unittest.mock import Mock
 
 import numpy as np
@@ -42,6 +44,34 @@ def test_cache_refresh_and_skip_invalid(monkeypatch, tmp_path, gp_response, capl
     os.utime(tmp_path / f"{group}.json", (stale, stale))
     assert len(catalog.load_catalog(group)) == 1
     assert request.call_count == 2
+
+
+def test_concurrent_sessions_share_a_catalog_download(monkeypatch, tmp_path, gp_response):
+    """Concurrent sessions requesting the same GP group share one download."""
+    ready = Barrier(2)
+    second_request = Event()
+    reply = Mock(status_code=200)
+    reply.json.return_value = gp_response
+
+    def delayed_reply(*args, **kwargs):
+        """Simulate a slow HTTP response while another session requests the group."""
+        if request.call_count > 1:
+            second_request.set()
+        second_request.wait(timeout=0.2)
+        return reply
+
+    def load_from_session(group):
+        """Return the catalog numbers after both sessions are ready to load."""
+        ready.wait(timeout=5)
+        return [model.satnum for model in catalog.load_catalog(group)]
+
+    request = Mock(side_effect=delayed_reply)
+    monkeypatch.setattr(catalog.requests, "get", request)
+    monkeypatch.setattr(catalog, "CACHE_DIR", tmp_path)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(load_from_session, ["stations", "STATIONS"]))
+    assert results == [[22675], [22675]]
+    assert request.call_count == 1
 
 
 @pytest.mark.parametrize("status_code", [403, 429])
@@ -250,6 +280,32 @@ def test_fake_conjunction_matches_contract():
     conjunction = Conjunction(**fields)
     assert conjunction.tca.utcoffset() == timedelta(0)
     assert conjunction.miss_km == 0.75
+
+
+def test_screening_threshold_is_independent_of_window_start():
+    """A near-threshold miss in km survives refinement late in a 48-hour window."""
+    from src.orbits.demo import load_demo_scenario
+
+    scenario, primary, catalog_objects = load_demo_scenario()
+    secondary = next(model for model in catalog_objects if model.satnum == 34387)
+    start = datetime.fromisoformat(scenario["start"])
+    # Both windows sample the same UTC grid around this 0.661695 km pass.
+    local = find_conjunctions(primary, [secondary], start + timedelta(hours=43), 1, 60, 0.66170)
+    full = find_conjunctions(primary, [secondary], start, 48, 60, 0.66170)
+    assert len(full) == len(local) == 1
+    assert abs((full[0].tca - local[0].tca).total_seconds()) < 0.00001
+    assert full[0].miss_km == pytest.approx(local[0].miss_km, abs=1e-8)
+
+
+def test_finite_screening_radius_can_cover_the_whole_orbit():
+    """A large finite radius in km includes the same minima as a full-orbit screen."""
+    from src.orbits.demo import load_demo_scenario
+
+    scenario, primary, debris = load_demo_scenario()
+    start = datetime.fromisoformat(scenario["start"])
+    expected = find_conjunctions(primary, debris[:1], start, 1, screen_km=50_000)
+    assert expected
+    assert find_conjunctions(primary, debris[:1], start, 1, screen_km=1e200) == expected
 
 
 def test_socrates_same_input_epochs():

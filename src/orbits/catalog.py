@@ -6,6 +6,7 @@ import re
 import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from threading import Lock
 
 import requests
 from sgp4.api import Satrec
@@ -16,6 +17,7 @@ GP_URL = "https://celestrak.org/NORAD/elements/gp.php"
 CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
 CACHE_SECONDS = 7200
 _LOG = logging.getLogger(__name__)
+_GROUP_LOCKS = {}
 
 
 def load_catalog(group: str) -> list[Satrec]:
@@ -28,6 +30,14 @@ def load_named_catalog(group: str) -> list[tuple[str, Satrec]]:
     if not re.fullmatch(r"[a-zA-Z0-9-]+", group):
         raise ValueError("Invalid CelesTrak group name")
     group = group.lower()
+    # Streamlit sessions share a process. Let the first session finish refreshing
+    # this group before another session checks the cache for it.
+    with _GROUP_LOCKS.setdefault(group, Lock()):
+        return _load_group(group)
+
+
+def _load_group(group: str) -> list[tuple[str, Satrec]]:
+    """Read or refresh one group's GP elements with UTC epochs under its lock."""
     path = CACHE_DIR / f"{group}.json"
     try:
         cached_records = json.loads(path.read_text())

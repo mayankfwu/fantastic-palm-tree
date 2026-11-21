@@ -99,17 +99,20 @@ def _refine(primary, secondary, start, jd, fraction, left, sample, right, screen
 
     candidates = [left, sample, right]
     if right > left:
+        # Optimize seconds relative to the nearby sample. A large offset from
+        # the scenario start would loosen the solver's relative time tolerance.
         optimum = minimize_scalar(
-            distance_squared, bounds=(left, right), method="bounded", options={"xatol": 0.001},
+            lambda delta: distance_squared(sample + delta), bounds=(left - sample, right - sample),
+            method="bounded", options={"xatol": 1e-6},
         )
         if optimum.success:
-            candidates.append(optimum.x)
+            candidates.append(sample + optimum.x)
     offset = min(candidates, key=distance_squared)
-    miss_squared = distance_squared(offset)
-    if not miss_squared < screen_km ** 2:
+    miss_km = distance_squared(offset) ** 0.5
+    if not miss_km < screen_km:
         return None
     _, relative_velocity = _relative_state(primary, secondary, jd, fraction + offset / 86400)
     return Conjunction(
         primary.satnum, secondary.satnum, start + timedelta(seconds=float(offset)),
-        miss_squared ** 0.5, float(np.linalg.norm(relative_velocity)),
+        miss_km, float(np.linalg.norm(relative_velocity)),
     )

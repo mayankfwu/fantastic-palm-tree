@@ -20,18 +20,21 @@ CLOSE_PASS_KM = 5.0
 
 def _closest_near(predicted_time, primary_path, secondary_path):
     """Return the refined UTC time and miss in km within two minutes of a candidate."""
-    def miss(offset):
-        """Measure separation in TEME km at an offset in seconds."""
-        times = [predicted_time + timedelta(seconds=float(offset))]
-        separation = np.linalg.norm(primary_path(times)[0] - secondary_path(times)[0])
-        return float(separation) if np.isfinite(separation) else np.inf
+    def separations(offsets):
+        """Measure separations in TEME km at the requested offsets in seconds."""
+        times = [predicted_time + timedelta(seconds=float(offset)) for offset in offsets]
+        distances = np.linalg.norm(primary_path(times) - secondary_path(times), axis=1)
+        return np.where(np.isfinite(distances), distances, np.inf)
 
     samples = np.arange(-120, 121, 5)
-    distances = [miss(offset) for offset in samples]
+    distances = separations(samples)
     index = int(np.argmin(distances))
     offset, distance = samples[index], distances[index]
     if 0 < index < len(samples) - 1 and np.isfinite(distance):
-        best = minimize_scalar(miss, bounds=(samples[index - 1], samples[index + 1]), method="bounded")
+        best = minimize_scalar(
+            lambda value: separations([value])[0],
+            bounds=(samples[index - 1], samples[index + 1]), method="bounded",
+        )
         if best.success and best.fun < distance:
             offset, distance = best.x, best.fun
     return predicted_time + timedelta(seconds=float(offset)), distance

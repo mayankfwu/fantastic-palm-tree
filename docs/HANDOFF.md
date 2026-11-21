@@ -1,6 +1,6 @@
 # Contributor handoff
 
-This hackathon project simulates satellite–debris encounters. The orbit backend and Streamlit demo work on their own. The dashboard also supports the risk and maneuver models on `b-risk-maneuver` once those modules are available on the same checkout.
+This hackathon project simulates satellite–debris encounters. The Streamlit dashboard integrates the orbit backend with the collision risk and maneuver models on `main`.
 
 Read [AGENTS.md](../AGENTS.md) for folder ownership and the shared interfaces. The [orbit plan and validation notes](ORBITS_PLAN.md) explain the screening approach and the comparison against CelesTrak SOCRATES Plus.
 
@@ -30,6 +30,7 @@ The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMO
 - The local SQLite catalog and CelesTrak download cache are gitignored. The demo fixtures and offline test inputs belong in Git. The radial filter and time grid approximate continuous screening. Public GP data provides no covariance.
 - Owner A hardening rejects non-finite SGP4 positions or velocities during both grid propagation and refinement. HTTP 200 responses must contain usable orbital elements before replacing the local catalog cache. The orbit view uses a spherical Earth in the same TEME coordinates as the trajectories.
 - When a refresh fails, the loader logs a warning and uses an expired cache that still contains usable elements, preserving its timestamp. A non-JSON response without a usable cache raises a group-specific error. This SGP4 integration supports NORAD catalog IDs from 1 to 339999.
+- Concurrent sessions in one process now serialize downloads per group. Closest-approach refinement uses time relative to the nearby grid sample so the solver retains precision late in a long window. An independent 5-second scan with local millisecond refinement confirmed both saved encounters across all 581 debris objects.
 
 ## Owner B — Collision risk and maneuvers
 
@@ -59,6 +60,7 @@ The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMO
 - The rolling scene reads avoidance from scene-keyed session state. Its fragment call uses the original arguments so a cached fragment does not receive an unexpected avoidance keyword.
 - **Apply avoidance maneuver** replays a selected catalog or guided encounter with a signed along-track velocity change. The preview defaults to +10 m/s and begins the finite burn 20 minutes before closest approach when the scenario allows it. It overlays the original path and shows burn, coast, recovery, and rejoin phases. Recovery is an idealized guidance profile separate from the Part B fuel estimate. Contact pauses playback on the contact snapshot.
 - User-uploaded debris remains deferred. For that workflow, call `import_user_omm(upload.getvalue(), kind)`, surface validation errors, and place preferred elements first when a NORAD ID appears more than once.
+- Codex completed the evaluator README and added regressions for failed catalog retries, co-orbiting objects in close-up, and delayed playback windows. The dashboard waits 60 seconds between attempts for an unavailable group. Closest-pass previews now propagate the coarse samples in a batch. The suite passed 57 tests and 3 subtests. Firefox exercised guided impact and avoidance, both staged encounter panels, and tracking beyond the first 100-minute window. Live mode screened SCD 2 against 50 debris using the CelesTrak download cache and displayed the risk and fuel results.
 
 ### Future continuous simulation
 
@@ -68,8 +70,8 @@ The [frozen scenario](../data/fixtures/demo_scd2.json) uses SCD 2 and [581 COSMO
 
 ## Next three tasks
 
-1. Merge Owner B's reviewed branch with the dashboard integration.
-2. Recheck a live catalog screening result with Part B loaded.
-3. Rehearse the offline demo and explain the linear burn model and its lead-time assumption.
+1. Coordinate with Owner B on direct API validation. The risk, fuel, and planning functions can accept non-finite inputs, and the planner accepts a timezone-naive TCA.
+2. Review post-burn screening for previously distant debris entering the 5 km candidate set after a maneuver.
+3. Rehearse the offline walkthrough and explain the linear burn model and its lead-time assumption.
 
-Codex implemented the Owner A backend, fixtures, and validation tests, then added the Streamlit interface and plots. The demo reproduced the published SOCRATES miss distance to its displayed precision when screened using the same reference elements. The Part B panel was tested with 47 passing tests in an isolated combined checkout, including both guided encounters, safe encounters, adjustable fuel inputs, and planner errors. Until both branches are combined, the dashboard reports unavailable Part B modules and keeps the orbit demo usable.
+Codex implemented the Owner A backend, fixtures, and validation tests, then added the Streamlit interface and plots. The demo reproduced the published SOCRATES miss distance to its displayed precision when screened using the same reference elements. The Part B tests cover both guided encounters, safe encounters, adjustable fuel inputs, and planner errors.

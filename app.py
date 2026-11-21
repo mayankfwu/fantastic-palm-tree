@@ -17,6 +17,7 @@ from src.viz.avoidance import render_avoidance, render_burn_replay
 from src.viz.encounter import CONTACT_KM, close_up_html, orbit_html, separation_figure
 from src.viz.rolling_scene import render_continuous_orbit
 
+CATALOG_RETRY_SECONDS = 60
 SATELLITE_GROUPS = {"Space stations": "stations", "Earth resources": "resource", "Active satellites": "active"}
 DEBRIS_GROUPS = {
     "COSMOS 2251": "cosmos-2251-debris",
@@ -52,10 +53,22 @@ def main():
 def session_catalog(group):
     """Reuse session-local CelesTrak names and SGP4 models with UTC epochs."""
     catalogs = st.session_state.setdefault("live_catalogs", {})
+    failures = st.session_state.setdefault("catalog_failures", {})
+    now = monotonic()
+    if group in failures:
+        retry_at, reason = failures[group]
+        if now < retry_at:
+            raise ValueError(reason)
+        del failures[group]
     entry = catalogs.get(group)
-    if entry is None or monotonic() - entry[0] >= CACHE_SECONDS:
+    if entry is None or now - entry[0] >= CACHE_SECONDS:
         with st.spinner(f"Loading CelesTrak group {group}…"):
-            models = load_named_catalog(group)
+            try:
+                models = load_named_catalog(group)
+            except (requests.RequestException, ValueError, OSError) as exc:
+                reason = f"{exc}. Retry this catalog after {CATALOG_RETRY_SECONDS} seconds"
+                failures[group] = monotonic() + CATALOG_RETRY_SECONDS, reason
+                raise ValueError(reason) from exc
         entry = monotonic(), {model.satnum: (name, model) for name, model in models}
         catalogs[group] = entry
     return entry[1]
@@ -194,7 +207,7 @@ def render_encounter_table(encounters):
         [
             {
                 "Debris NORAD ID": item.secondary_id,
-                "Closest approach (UTC)": item.tca.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                "Closest approach (UTC)": (item.tca + timedelta(microseconds=500)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
                 "Miss (km)": item.miss_km,
                 "Relative speed (km/s)": item.rel_speed_kms,
             }

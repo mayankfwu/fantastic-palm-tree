@@ -86,7 +86,9 @@ def close_up_html(
     relative_step = (debris_path[center + 1] - primary_path[center + 1]) - (
         debris_path[center - 1] - primary_path[center - 1]
     )
-    along = relative_step / np.linalg.norm(relative_step)
+    step_length = np.linalg.norm(relative_step)
+    # Co-orbiting objects can have no relative motion to orient the camera.
+    along = relative_step / step_length if step_length > 1e-12 else np.array([1.0, 0.0, 0.0])
     miss = debris_path[center] - primary_path[center]
     across = miss - (miss @ along) * along
     if np.linalg.norm(across) < 1e-9:
