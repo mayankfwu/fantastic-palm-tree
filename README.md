@@ -6,10 +6,7 @@ ORBITGUARD is a Streamlit simulator built for the ASTRA 2026 hackathon. It predi
 
 Install **Python 3.12**, download or clone this repository, and extract it if you downloaded a ZIP. Open a terminal in the folder containing `run_demo.py` and run the command for your system.
 
-| System | Launch the demo |
-| --- | --- |
-| Windows (PowerShell or Command Prompt) | `py -3.12 run_demo.py` |
-| macOS or Linux | `python3.12 run_demo.py` |
+use code 'venv/bin/streamlit run app.py' in terminal tp start
 
 The [launcher](run_demo.py) creates the project environment, installs any missing dependencies, and opens **Offline catalog** with bundled data. Run it once with internet access before an offline review. Subsequent launches reuse the installed packages.
 
